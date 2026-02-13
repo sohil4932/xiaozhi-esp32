@@ -861,4 +861,38 @@ menu "TAIJIPAI_S3_CONFIG"
         启动双声道
 endmenu
 
+menu "SD Card Configuration"
+    config USE_SD_CARD
+        bool "Enable SD Card Support"
+        default n
+        help
+            Enable SD card support for offline audio playback
+
+    choice SD_CARD_MODE
+        prompt "SD Card Interface Mode"
+        depends on USE_SD_CARD
+        default SD_CARD_MODE_SDMMC
+        help
+            Select the SD card interface mode
+
+        config SD_CARD_MODE_SDMMC
+            bool "SDMMC Mode"
+            help
+                Use SDMMC interface (1-line or 4-line mode)
+
+        config SD_CARD_MODE_SPI
+            bool "SPI Mode"
+            help
+                Use SPI interface
+    endchoice
+
+    config SD_CARD_MAX_FILES
+        int "Maximum open files"
+        depends on USE_SD_CARD
+        default 5
+        range 1 20
+        help
+            Maximum number of files that can be open simultaneously
+endmenu
+
 endmenu

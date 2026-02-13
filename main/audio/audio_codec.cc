@@ -40,9 +40,27 @@ void AudioCodec::Start() {
 void AudioCodec::SetOutputVolume(int volume) {
     output_volume_ = volume;
     ESP_LOGI(TAG, "Set output volume to %d", output_volume_);
-    
+
     Settings settings("audio", true);
     settings.SetInt("output_volume", output_volume_);
+}
+
+void AudioCodec::IncreaseVolume(int step) {
+    int new_volume = output_volume_ + step;
+    if (new_volume > 100) {
+        new_volume = 100;
+    }
+    SetOutputVolume(new_volume);
+    ESP_LOGI(TAG, "Volume increased to %d", new_volume);
+}
+
+void AudioCodec::DecreaseVolume(int step) {
+    int new_volume = output_volume_ - step;
+    if (new_volume < 0) {
+        new_volume = 0;
+    }
+    SetOutputVolume(new_volume);
+    ESP_LOGI(TAG, "Volume decreased to %d", new_volume);
 }
 
 void AudioCodec::SetInputGain(float gain) {

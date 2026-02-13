@@ -125,6 +125,8 @@ public:
     void EnableAudioTesting(bool enable);
     void EnableDeviceAec(bool enable);
     void SetOfflineModeEnabled(bool enabled);
+    bool IsOfflineModeEnabled() const;
+    void TriggerCommandListening();  // Manually trigger offline command listening
 
     void SetCallbacks(AudioServiceCallbacks& callbacks);
 

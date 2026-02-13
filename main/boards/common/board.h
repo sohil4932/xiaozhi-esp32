@@ -14,6 +14,11 @@
 #include "camera.h"
 #include "assets.h"
 
+// Forward declaration for SD card manager
+namespace offline {
+    class SDCardManager;
+}
+
 /**
  * Network events for unified callback
  */
@@ -73,6 +78,7 @@ public:
     virtual bool GetTemperature(float& esp32temp);
     virtual Display* GetDisplay();
     virtual Camera* GetCamera();
+    virtual offline::SDCardManager* GetSDCard() { return nullptr; }
     virtual NetworkInterface* GetNetwork() = 0;
     virtual void StartNetwork() = 0;
     virtual void SetNetworkEventCallback(NetworkEventCallback callback) { (void)callback; }

@@ -10,6 +10,8 @@ set(SOURCES "audio/audio_codec.cc"
             "audio/codecs/es8389_audio_codec.cc"
             "audio/codecs/dummy_audio_codec.cc"
             "audio/processors/audio_debugger.cc"
+            "offline/sd_card_manager.cc"
+            "offline/simple_audio_player.cc"
             "led/single_led.cc"
             "led/circular_strip.cc"
             "led/gpio_led.cc"
@@ -246,6 +248,7 @@ elseif(CONFIG_BOARD_TYPE_ESP_HI)
     set(DEFAULT_ASSETS_EXTRA_FILES "${CMAKE_BINARY_DIR}/emoji")
 elseif(CONFIG_BOARD_TYPE_ECHOEAR)
     set(BOARD_TYPE "echoear")
+    set(BOARD_NAME "Noko")
     set(BUILTIN_TEXT_FONT font_puhui_20_4)
     set(BUILTIN_ICON_FONT font_awesome_20_4)
     set(DEFAULT_EMOJI_COLLECTION twemoji_64)
@@ -880,6 +883,7 @@ idf_component_register(SRCS ${SOURCES}
                         console
                         efuse
                         bt
+                        fatfs
                     )
 
 # Use target_compile_definitions to define BOARD_TYPE, BOARD_NAME

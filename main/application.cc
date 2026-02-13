@@ -9,6 +9,7 @@
 #include "mcp_server.h"
 #include "assets.h"
 #include "settings.h"
+#include "offline/sd_card_manager.h"
 
 #include <cstring>
 #include <esp_log.h>
@@ -79,6 +80,26 @@ void Application::Initialize() {
     if (assets.partition_valid()) {
         ESP_LOGI(TAG, "Loading assets for offline mode");
         assets.Apply();
+    }
+
+    // Enable offline mode for SD card command playback (if SD card is available)
+    auto* sd = board.GetSDCard();
+    if (sd && sd->IsMounted()) {
+        ESP_LOGI(TAG, "SD card available, enabling offline command mode");
+        audio_service_.SetOfflineModeEnabled(true);
+
+        // Play boot sound from SD card
+        std::vector<uint8_t> boot_audio;
+        esp_err_t ret = sd->ReadFile("/sdcard/boot.ogg", boot_audio);
+        if (ret == ESP_OK && !boot_audio.empty()) {
+            ESP_LOGI(TAG, "Playing boot sound from SD card (%zu bytes)", boot_audio.size());
+            std::string_view audio_view(reinterpret_cast<const char*>(boot_audio.data()), boot_audio.size());
+            audio_service_.PlaySound(audio_view);
+        } else {
+            ESP_LOGI(TAG, "Boot sound not found on SD card, skipping");
+        }
+    } else {
+        ESP_LOGI(TAG, "SD card not available, offline command mode disabled");
     }
 
     AudioServiceCallbacks callbacks;

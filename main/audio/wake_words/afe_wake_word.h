@@ -34,6 +34,7 @@ public:
     void Stop();
     void SetOfflineModeEnabled(bool enabled) { offline_mode_enabled_ = enabled; }
     bool IsOfflineModeEnabled() const { return offline_mode_enabled_; }
+    void TriggerCommandListening();  // Manually trigger command listening mode
     size_t GetFeedSize();
     void EncodeWakeWordData();
     bool GetWakeWordOpus(std::vector<uint8_t>& opus);

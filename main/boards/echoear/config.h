@@ -13,9 +13,12 @@
 
 #define POWER_CTRL  GPIO_NUM_9
 #define LED_G       GPIO_NUM_43
-#define SD_MISO     GPIO_NUM_17
-#define SD_SCK      GPIO_NUM_16
-#define SD_MOSI     GPIO_NUM_38
+
+// SD Card SDMMC 1-line mode pins
+#define SD_CMD      GPIO_NUM_38
+#define SD_CLK      GPIO_NUM_16
+#define SD_D0       GPIO_NUM_17
+// Note: EchoEar uses 1-line SDMMC mode (not 4-line)
 
 #define AUDIO_I2S_GPIO_MCLK     GPIO_NUM_42
 #define AUDIO_I2S_GPIO_WS       GPIO_NUM_39

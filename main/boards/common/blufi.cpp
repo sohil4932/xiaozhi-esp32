@@ -108,17 +108,15 @@ esp_err_t Blufi::init() {
     m_provisioned = false;
     m_deinited = false;
 
-    // Start WiFi scan early to have results ready when user connects
+    // Don't start WiFi scan immediately - wait for BlueFi connection
     auto& wifi_manager = WifiManager::GetInstance();
-    if (!wifi_manager.IsInitialized() || !wifi_manager.IsConfigMode()) {
-        // start scan immediately
-        start_wifi_scan();
-    } else {
+    if (wifi_manager.IsInitialized() && wifi_manager.IsConfigMode()) {
         ESP_LOGE(BLUFI_TAG,
                  "Blufi and WiFi hotspot network configuration cannot "
                  "be used simultaneously.");
         return ret;
     }
+    ESP_LOGI(BLUFI_TAG, "BlueFi initialized, WiFi scan will start when client connects");
 
 #if CONFIG_BT_CONTROLLER_ENABLED || !CONFIG_BT_NIMBLE_ENABLED
     ret = _controller_init();
@@ -614,7 +612,13 @@ void Blufi::_send_wifi_list() {
     esp_blufi_send_wifi_list(blufi_ap_list.size(), blufi_ap_list.data());
 
     m_ap_records.clear();
-    start_wifi_scan();
+
+    // Only continue scanning if BlueFi is actively connected
+    if (m_ble_is_connected) {
+        start_wifi_scan();
+    } else {
+        ESP_LOGI(BLUFI_TAG, "BlueFi not connected, stopping periodic WiFi scan");
+    }
 }
 
 void Blufi::_wifi_scan_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id,
@@ -661,6 +665,8 @@ void Blufi::_handle_event(esp_blufi_cb_event_t event, esp_blufi_cb_param_t* para
             m_ble_is_connected = true;
             esp_blufi_adv_stop();
             _security_init();
+            // Start WiFi scan when BlueFi client connects
+            start_wifi_scan();
             break;
         case ESP_BLUFI_EVENT_BLE_DISCONNECT:
             ESP_LOGI(BLUFI_TAG, "BLUFI ble disconnect");

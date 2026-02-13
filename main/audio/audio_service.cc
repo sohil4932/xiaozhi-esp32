@@ -1,4 +1,8 @@
 #include "audio_service.h"
+#include "../offline/simple_audio_player.h"
+#include "../offline/sd_card_manager.h"
+#include "../boards/common/board.h"
+#include "../display/display.h"
 #include <esp_log.h>
 #include <cstring>
 
@@ -638,6 +642,23 @@ void AudioService::SetOfflineModeEnabled(bool enabled) {
     }
 }
 
+bool AudioService::IsOfflineModeEnabled() const {
+    auto afe_wake_word = dynamic_cast<AfeWakeWord*>(wake_word_.get());
+    if (afe_wake_word != nullptr) {
+        return afe_wake_word->IsOfflineModeEnabled();
+    }
+    return false;
+}
+
+void AudioService::TriggerCommandListening() {
+    auto afe_wake_word = dynamic_cast<AfeWakeWord*>(wake_word_.get());
+    if (afe_wake_word != nullptr) {
+        afe_wake_word->TriggerCommandListening();
+    } else {
+        ESP_LOGW(TAG, "Cannot trigger command listening - not using AFE wake word");
+    }
+}
+
 void AudioService::SetCallbacks(AudioServiceCallbacks& callbacks) {
     callbacks_ = callbacks;
 }
@@ -744,24 +765,75 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
         // Setup command callback for offline mode
         auto afe_wake_word = dynamic_cast<AfeWakeWord*>(wake_word_.get());
         if (afe_wake_word != nullptr) {
-            afe_wake_word->OnCommandDetected([](int command_id, const std::string& command_string) {
-                ESP_LOGI("AudioService", "Offline command detected! ID: %d, Command: %s", command_id, command_string.c_str());
+            // Create static audio player (persists across callbacks)
+            static offline::SimpleAudioPlayer audio_player;
+            static bool player_initialized = false;
 
-                // For now, just print the command
-                switch (command_id) {
-                    case 0:
-                        ESP_LOGI("AudioService", ">>> Command: SING A SONG");
-                        break;
-                    case 1:
-                        ESP_LOGI("AudioService", ">>> Command: TELL ME A STORY");
-                        break;
-                    case 2:
-                        ESP_LOGI("AudioService", ">>> Command: GOOD NIGHT");
-                        break;
-                    default:
-                        ESP_LOGW("AudioService", "Unknown command ID: %d", command_id);
-                        break;
+            if (!player_initialized) {
+                if (audio_player.Initialize(this) == ESP_OK) {
+                    player_initialized = true;
+                    ESP_LOGI("AudioService", "Offline audio player initialized");
                 }
+            }
+
+            // Create a dedicated task for offline playback with large stack
+            static TaskHandle_t playback_task_handle = nullptr;
+            static QueueHandle_t playback_queue = nullptr;
+
+            struct playback_msg {
+                offline::SimpleAudioPlayer* player;
+                int cmd_id;
+            };
+
+            if (playback_task_handle == nullptr) {
+                playback_queue = xQueueCreate(3, sizeof(playback_msg));
+
+                xTaskCreate([](void* arg) {
+                    auto* queue = static_cast<QueueHandle_t>(arg);
+                    playback_msg msg;
+
+                    while (true) {
+                        if (xQueueReceive(queue, &msg, portMAX_DELAY) == pdTRUE) {
+                            auto& board = Board::GetInstance();
+                            auto* sd = board.GetSDCard();
+
+                            if (!sd || !sd->IsMounted()) {
+                                ESP_LOGW("AudioService", "SD card not available");
+                                continue;
+                            }
+
+                            const char* folder = nullptr;
+                            switch (msg.cmd_id) {
+                                case 0: folder = "/sdcard/jokes"; break;
+                                case 1: folder = "/sdcard/stories"; break;
+                                case 2: folder = "/sdcard/goodnight"; break;
+                                case 3:
+                                    // Volume Up
+                                    ESP_LOGI("AudioService", "Volume Up command");
+                                    board.GetAudioCodec()->IncreaseVolume(10);
+                                    break;
+                                case 4:
+                                    // Volume Down
+                                    ESP_LOGI("AudioService", "Volume Down command");
+                                    board.GetAudioCodec()->DecreaseVolume(10);
+                                    break;
+                            }
+
+                            if (folder) {
+                                ESP_LOGI("AudioService", "Playing from %s", folder);
+                                msg.player->PlayRandomFromFolder(folder);
+                            }
+                        }
+                    }
+                }, "offline_play", 8192, playback_queue, 5, &playback_task_handle);
+            }
+
+            afe_wake_word->OnCommandDetected([this, &audio_player](int command_id, const std::string& command_string) {
+                ESP_LOGI("AudioService", "Offline command detected! ID: %d", command_id);
+
+                // Send to playback task
+                playback_msg msg = {&audio_player, command_id};
+                xQueueSend(playback_queue, &msg, 0);
             });
         }
     }

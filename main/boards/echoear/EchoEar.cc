@@ -7,6 +7,7 @@
 #include "config.h"
 #include "backlight.h"
 #include "esp_video.h"
+#include "offline/sd_card_manager.h"
 
 #include <esp_log.h>
 
@@ -20,6 +21,9 @@
 #include "touch.h"
 
 #include "driver/temperature_sensor.h"
+#include <sdmmc_cmd.h>
+#include <driver/sdmmc_host.h>
+#include <esp_vfs_fat.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
@@ -479,7 +483,15 @@ private:
                     if (app.GetDeviceState() == kDeviceStateStarting) {
                         board.EnterWifiConfigMode();
                     } else {
-                        app.ToggleChatState();
+                        auto& audio = app.GetAudioService();
+                        if (audio.IsOfflineModeEnabled()) {
+                            // In offline mode, trigger command listening on touch
+                            ESP_LOGI(TAG, "Screen touch: Triggering command listening mode");
+                            audio.TriggerCommandListening();
+                        } else {
+                            // In online mode, toggle chat state
+                            app.ToggleChatState();
+                        }
                     }
                 }
             }
@@ -623,6 +635,15 @@ public:
 #ifdef CONFIG_ESP_VIDEO_ENABLE_USB_UVC_VIDEO_DEVICE
         InitializeCamera();
 #endif // CONFIG_ESP_VIDEO_ENABLE_USB_UVC_VIDEO_DEVICE
+
+        // Initialize SD card for offline audio playback
+        auto& sd = offline::SDCardManager::GetInstance();
+        esp_err_t ret = sd.Initialize();
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "SD card initialized successfully");
+        } else {
+            ESP_LOGW(TAG, "SD card initialization failed: %s (offline playback disabled)", esp_err_to_name(ret));
+        }
     }
 
     virtual AudioCodec* GetAudioCodec() override
@@ -660,6 +681,10 @@ public:
 
     virtual Camera* GetCamera() override {
         return camera_;
+    }
+
+    virtual offline::SDCardManager* GetSDCard() override {
+        return &offline::SDCardManager::GetInstance();
     }
 };
 
