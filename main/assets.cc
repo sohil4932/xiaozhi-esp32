@@ -98,14 +98,19 @@ bool Assets::LoadSrmodelsFromIndex(Assets* assets, cJSON* root) {
             }
             assets->models_list_ = srmodel_load(static_cast<uint8_t*>(ptr));
             if (assets->models_list_ != nullptr) {
+                ESP_LOGI(TAG, "Successfully loaded srmodels.bin, %d models found", assets->models_list_->num);
+                for (int i = 0; i < assets->models_list_->num; i++) {
+                    ESP_LOGI(TAG, "  Model %d: %s", i, assets->models_list_->model_name[i]);
+                }
                 auto& app = Application::GetInstance();
                 app.GetAudioService().SetModelsList(assets->models_list_);
+                ESP_LOGI(TAG, "Models list set to AudioService");
                 if (need_delete_root) {
                     cJSON_Delete(root);
                 }
                 return true;
             } else {
-                ESP_LOGE(TAG, "Failed to load srmodels.bin");
+                ESP_LOGE(TAG, "Failed to load srmodels.bin - srmodel_load returned nullptr");
             }
         } else {
             ESP_LOGE(TAG, "The srmodels file %s is not found", srmodels_file.c_str());
@@ -352,6 +357,15 @@ bool Assets::LvglStrategy::Apply(Assets* assets) {
     }
     
     cJSON_Delete(root);
+
+    // Also load emote assets if using EmoteDisplay (EchoEar uses LVGL + EmoteDisplay)
+    auto* emote_display = dynamic_cast<emote::EmoteDisplay*>(display);
+    if (emote_display && emote_display->GetEmoteHandle() != nullptr) {
+        ESP_LOGI(TAG, "Loading emote assets from partition...");
+        emote_load_assets(emote_display->GetEmoteHandle());
+        ESP_LOGI(TAG, "Emote assets loaded successfully");
+    }
+
     return true;
 }
 #endif // HAVE_LVGL
@@ -418,7 +432,11 @@ bool Assets::EmoteStrategy::Apply(Assets* assets) {
     auto* emote_display = dynamic_cast<emote::EmoteDisplay*>(display);
 
     if (emote_display && emote_display->GetEmoteHandle() != nullptr) {
+        ESP_LOGI(TAG, "Loading emote assets from partition...");
         emote_load_assets(emote_display->GetEmoteHandle());
+        ESP_LOGI(TAG, "Emote assets loaded successfully");
+    } else {
+        ESP_LOGW(TAG, "Cannot load emote assets - emote_display is null or handle not initialized");
     }
     return true;
 }

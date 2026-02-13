@@ -124,6 +124,7 @@ public:
     void EnableVoiceProcessing(bool enable);
     void EnableAudioTesting(bool enable);
     void EnableDeviceAec(bool enable);
+    void SetOfflineModeEnabled(bool enabled);
 
     void SetCallbacks(AudioServiceCallbacks& callbacks);
 

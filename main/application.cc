@@ -65,13 +65,21 @@ void Application::Initialize() {
     // Setup the display
     auto display = board.GetDisplay();
     display->SetupUI();
-    // Print board name/version info
+
+    // Print board name/version info (will be cleared later in WiFiConfiguring state)
     display->SetChatMessage("system", SystemInfo::GetUserAgent().c_str());
 
     // Setup the audio service
     auto codec = board.GetAudioCodec();
     audio_service_.Initialize(codec);
     audio_service_.Start();
+
+    // Load assets early for offline mode (SR models + emote animations)
+    auto& assets = Assets::GetInstance();
+    if (assets.partition_valid()) {
+        ESP_LOGI(TAG, "Loading assets for offline mode");
+        assets.Apply();
+    }
 
     AudioServiceCallbacks callbacks;
     callbacks.on_send_queue_available = [this]() {
@@ -389,8 +397,10 @@ void Application::CheckAssetsVersion() {
         }
     }
 
-    // Apply assets
-    assets.Apply();
+    // Apply assets if new assets were downloaded (assets already loaded in Initialize())
+    if (!download_url.empty()) {
+        assets.Apply();
+    }
     display->SetChatMessage("system", "");
     display->SetEmotion("microchip_ai");
 }
@@ -867,6 +877,7 @@ void Application::HandleStateChangedEvent() {
             display->SetStatus(Lang::Strings::STANDBY);
             display->ClearChatMessages();  // Clear messages first
             display->SetEmotion("neutral"); // Then set emotion (wechat mode checks child count)
+            audio_service_.SetOfflineModeEnabled(false);  // Disable offline mode in online state
             audio_service_.EnableVoiceProcessing(false);
             audio_service_.EnableWakeWordDetection(true);
             break;
@@ -874,10 +885,12 @@ void Application::HandleStateChangedEvent() {
             display->SetStatus(Lang::Strings::CONNECTING);
             display->SetEmotion("neutral");
             display->SetChatMessage("system", "");
+            audio_service_.SetOfflineModeEnabled(false);  // Disable offline mode in online state
             break;
         case kDeviceStateListening:
             display->SetStatus(Lang::Strings::LISTENING);
             display->SetEmotion("neutral");
+            audio_service_.SetOfflineModeEnabled(false);  // Disable offline mode in online state
 
             // Make sure the audio processor is running
             if (play_popup_on_listening_ || !audio_service_.IsAudioProcessorRunning()) {
@@ -917,8 +930,51 @@ void Application::HandleStateChangedEvent() {
             audio_service_.ResetDecoder();
             break;
         case kDeviceStateWifiConfiguring:
-            audio_service_.EnableVoiceProcessing(false);
-            audio_service_.EnableWakeWordDetection(false);
+            // Enable ONLY wake word detection for offline mode (BlueFi + offline commands in parallel)
+            // DO NOT enable voice processing - AfeWakeWord has its own AFE instance
+
+            // Set display first
+            display->SetChatMessage("system", "");  // Clear the init message
+            display->SetStatus(Lang::Strings::STANDBY);
+            display->SetEmotion("happy");  // Show happy eyes during WiFi setup
+
+            // Delay audio initialization by 500ms to allow emotion display to render
+            // This matches the timing gap in online mode (470ms) where emotions render successfully
+            {
+                // Pre-enable codec input NOW to allocate DMA buffers while memory is available
+                // This prevents DMA allocation failure when wake word detection starts later
+                auto codec = board.GetAudioCodec();
+                if (!codec->input_enabled()) {
+                    codec->EnableInput(true);
+                }
+
+                static esp_timer_handle_t audio_start_timer = nullptr;
+
+                // Cancel any existing timer first
+                if (audio_start_timer) {
+                    esp_timer_stop(audio_start_timer);
+                    esp_timer_delete(audio_start_timer);
+                    audio_start_timer = nullptr;
+                }
+
+                // Create timer with lambda callback
+                esp_timer_create_args_t timer_args = {
+                    .callback = [](void* arg) {
+                        Application* app = static_cast<Application*>(arg);
+                        app->Schedule([app]() {
+                            app->audio_service_.SetOfflineModeEnabled(true);
+                            app->audio_service_.EnableWakeWordDetection(true);
+                        });
+                    },
+                    .arg = this,
+                    .dispatch_method = ESP_TIMER_TASK,
+                    .name = "audio_start",
+                    .skip_unhandled_events = false
+                };
+
+                esp_timer_create(&timer_args, &audio_start_timer);
+                esp_timer_start_once(audio_start_timer, 500000);  // 500ms in microseconds
+            }
             break;
         default:
             // Do nothing

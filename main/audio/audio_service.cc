@@ -547,17 +547,21 @@ std::unique_ptr<AudioStreamPacket> AudioService::PopWakeWordPacket() {
 }
 
 void AudioService::EnableWakeWordDetection(bool enable) {
+    ESP_LOGI(TAG, "%s wake word detection, wake_word_: %p, models_list_: %p",
+             enable ? "Enabling" : "Disabling", wake_word_.get(), models_list_);
     if (!wake_word_) {
+        ESP_LOGW(TAG, "No wake word instance available");
         return;
     }
 
-    ESP_LOGD(TAG, "%s wake word detection", enable ? "Enabling" : "Disabling");
     if (enable) {
         if (!wake_word_initialized_) {
+            ESP_LOGI(TAG, "Initializing wake word with models_list_: %p", models_list_);
             if (!wake_word_->Initialize(codec_, models_list_)) {
                 ESP_LOGE(TAG, "Failed to initialize wake word");
                 return;
             }
+            ESP_LOGI(TAG, "Wake word initialized successfully");
             wake_word_initialized_ = true;
         }
         // Reset input resampler to clear cached data from previous mode (e.g. AudioProcessor)
@@ -624,6 +628,14 @@ void AudioService::EnableDeviceAec(bool enable) {
     }
 
     audio_processor_->EnableDeviceAec(enable);
+}
+
+void AudioService::SetOfflineModeEnabled(bool enabled) {
+    ESP_LOGI(TAG, "%s offline command mode", enabled ? "Enabling" : "Disabling");
+    auto afe_wake_word = dynamic_cast<AfeWakeWord*>(wake_word_.get());
+    if (afe_wake_word != nullptr) {
+        afe_wake_word->SetOfflineModeEnabled(enabled);
+    }
 }
 
 void AudioService::SetCallbacks(AudioServiceCallbacks& callbacks) {
@@ -695,14 +707,23 @@ void AudioService::CheckAndUpdateAudioPowerState() {
 }
 
 void AudioService::SetModelsList(srmodel_list_t* models_list) {
+    ESP_LOGI(TAG, "SetModelsList called, models_list: %p", models_list);
+    if (models_list != nullptr) {
+        ESP_LOGI(TAG, "Models list has %d models", models_list->num);
+    }
     models_list_ = models_list;
 
 #if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
-    if (esp_srmodel_filter(models_list_, ESP_MN_PREFIX, NULL) != nullptr) {
-        wake_word_ = std::make_unique<CustomWakeWord>();
-    } else if (esp_srmodel_filter(models_list_, ESP_WN_PREFIX, NULL) != nullptr) {
+    // Priority: Use AfeWakeWord if WakeNet exists (it supports both WakeNet + MultiNet)
+    // Only use CustomWakeWord if MultiNet exists but no WakeNet
+    if (esp_srmodel_filter(models_list_, ESP_WN_PREFIX, NULL) != nullptr) {
+        ESP_LOGI(TAG, "Found WakeNet model, creating AfeWakeWord (supports wake word + offline commands)");
         wake_word_ = std::make_unique<AfeWakeWord>();
+    } else if (esp_srmodel_filter(models_list_, ESP_MN_PREFIX, NULL) != nullptr) {
+        ESP_LOGI(TAG, "Found MultiNet model only, creating CustomWakeWord");
+        wake_word_ = std::make_unique<CustomWakeWord>();
     } else {
+        ESP_LOGW(TAG, "No WakeNet or MultiNet model found");
         wake_word_ = nullptr;
     }
 #else
@@ -719,6 +740,30 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
                 callbacks_.on_wake_word_detected(wake_word);
             }
         });
+
+        // Setup command callback for offline mode
+        auto afe_wake_word = dynamic_cast<AfeWakeWord*>(wake_word_.get());
+        if (afe_wake_word != nullptr) {
+            afe_wake_word->OnCommandDetected([](int command_id, const std::string& command_string) {
+                ESP_LOGI("AudioService", "Offline command detected! ID: %d, Command: %s", command_id, command_string.c_str());
+
+                // For now, just print the command
+                switch (command_id) {
+                    case 0:
+                        ESP_LOGI("AudioService", ">>> Command: SING A SONG");
+                        break;
+                    case 1:
+                        ESP_LOGI("AudioService", ">>> Command: TELL ME A STORY");
+                        break;
+                    case 2:
+                        ESP_LOGI("AudioService", ">>> Command: GOOD NIGHT");
+                        break;
+                    default:
+                        ESP_LOGW("AudioService", "Unknown command ID: %d", command_id);
+                        break;
+                }
+            });
+        }
     }
 }
 

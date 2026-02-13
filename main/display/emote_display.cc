@@ -61,9 +61,21 @@ static bool OnFlushIoReady(const esp_lcd_panel_io_handle_t panel_io,
 // Flush callback for emote
 static void OnFlushCallback(int x_start, int y_start, int x_end, int y_end, const void* data, emote_handle_t handle)
 {
+    static int flush_count = 0;
+    flush_count++;
+    if (flush_count <= 5) {  // Only log first 5 flushes to avoid spam
+        ESP_LOGI(TAG, "OnFlushCallback called (count: %d) - area: (%d,%d)-(%d,%d)",
+                 flush_count, x_start, y_start, x_end, y_end);
+    }
+
     esp_lcd_panel_handle_t panel = (esp_lcd_panel_handle_t)emote_get_user_data(handle);
     if (panel != nullptr) {
-        esp_lcd_panel_draw_bitmap(panel, x_start, y_start, x_end, y_end, data);
+        esp_err_t ret = esp_lcd_panel_draw_bitmap(panel, x_start, y_start, x_end, y_end, data);
+        if (ret != ESP_OK && flush_count <= 5) {
+            ESP_LOGE(TAG, "esp_lcd_panel_draw_bitmap failed: %d", ret);
+        }
+    } else {
+        ESP_LOGE(TAG, "OnFlushCallback: panel is null!");
     }
 }
 
@@ -108,6 +120,7 @@ static emote_handle_t InitializeEmote(const esp_lcd_panel_handle_t panel, const 
         return nullptr;
     }
 
+    ESP_LOGI(TAG, "Emote initialized successfully, handle: %p", emote_handle);
     return emote_handle;
 }
 
@@ -137,8 +150,20 @@ EmoteDisplay::~EmoteDisplay()
 void EmoteDisplay::SetEmotion(const char* const emotion)
 {
     ESP_LOGI(TAG, "SetEmotion: %s", emotion);
-    if (emote_handle_ && emotion && strlen(emotion) > 0) {
-        emote_set_anim_emoji(emote_handle_, emotion);
+    if (!emote_handle_) {
+        ESP_LOGE(TAG, "SetEmotion failed: emote_handle_ is null!");
+        return;
+    }
+    if (!emotion || strlen(emotion) == 0) {
+        ESP_LOGW(TAG, "SetEmotion: emotion is empty");
+        return;
+    }
+    ESP_LOGI(TAG, "Calling emote_set_anim_emoji with emotion: %s", emotion);
+    esp_err_t ret = emote_set_anim_emoji(emote_handle_, emotion);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "emote_set_anim_emoji failed with error: %d", ret);
+    } else {
+        ESP_LOGI(TAG, "emote_set_anim_emoji succeeded for emotion: %s", emotion);
     }
 }
 

@@ -31,6 +31,7 @@ public:
     bool Download(std::string url, std::function<void(int progress, size_t speed)> progress_callback);
     bool Apply();
     bool GetAssetData(const std::string& name, void*& ptr, size_t& size);
+    static bool LoadSrmodelsFromIndex(Assets* assets, cJSON* root = nullptr);
 
     inline bool partition_valid() const { return partition_valid_; }
     inline std::string default_assets_url() const { return default_assets_url_; }
@@ -43,7 +44,6 @@ private:
     bool InitializePartition();
     void UnApplyPartition();
     static bool FindPartition(Assets* assets);
-    static bool LoadSrmodelsFromIndex(Assets* assets, cJSON* root = nullptr);
   
     class AssetStrategy {
     public:

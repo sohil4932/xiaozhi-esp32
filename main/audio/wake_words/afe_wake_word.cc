@@ -2,6 +2,7 @@
 #include "audio_service.h"
 #include <esp_log.h>
 #include <sstream>
+#include "esp_process_sdkconfig.h"
 
 #define DETECTION_RUNNING_EVENT 1
 
@@ -16,6 +17,12 @@ AfeWakeWord::AfeWakeWord()
 }
 
 AfeWakeWord::~AfeWakeWord() {
+    // Cleanup MultiNet
+    if (multinet_model_ != nullptr && multinet_iface_ != nullptr) {
+        multinet_iface_->destroy(multinet_model_);
+        multinet_model_ = nullptr;
+    }
+
     if (afe_data_ != nullptr) {
         afe_iface_->destroy(afe_data_);
     }
@@ -80,6 +87,9 @@ bool AfeWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) {
     afe_iface_ = esp_afe_handle_from_config(afe_config);
     afe_data_ = afe_iface_->create_from_config(afe_config);
 
+    // Initialize MultiNet for offline command recognition
+    InitializeMultiNet();
+
     xTaskCreate([](void* arg) {
         auto this_ = (AfeWakeWord*)arg;
         this_->AudioDetectionTask();
@@ -91,6 +101,10 @@ bool AfeWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) {
 
 void AfeWakeWord::OnWakeWordDetected(std::function<void(const std::string& wake_word)> callback) {
     wake_word_detected_callback_ = callback;
+}
+
+void AfeWakeWord::OnCommandDetected(std::function<void(int command_id, const std::string& command_string)> callback) {
+    command_detected_callback_ = callback;
 }
 
 void AfeWakeWord::Start() {
@@ -105,6 +119,38 @@ void AfeWakeWord::Stop() {
         afe_iface_->reset_buffer(afe_data_);
     }
     input_buffer_.clear();
+}
+
+void AfeWakeWord::InitializeMultiNet() {
+    // Find MultiNet model in models list
+    char* mn_name = esp_srmodel_filter(models_, ESP_MN_PREFIX, ESP_MN_ENGLISH);
+    if (mn_name == nullptr) {
+        ESP_LOGW(TAG, "No English MultiNet model found, offline commands disabled");
+        return;
+    }
+
+    ESP_LOGI(TAG, "Initializing MultiNet model: %s", mn_name);
+    multinet_iface_ = esp_mn_handle_from_name(mn_name);
+    if (multinet_iface_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to get MultiNet interface");
+        return;
+    }
+
+    // Create MultiNet model with 6 second timeout
+    multinet_model_ = multinet_iface_->create(mn_name, 6000);
+    if (multinet_model_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to create MultiNet model");
+        return;
+    }
+
+    // Load offline commands from sdkconfig
+    ESP_LOGI(TAG, "Loading offline commands from sdkconfig:");
+    esp_mn_commands_update_from_sdkconfig(multinet_iface_, multinet_model_);
+
+    // Print active commands
+    multinet_iface_->print_active_speech_commands(multinet_model_);
+
+    ESP_LOGI(TAG, "MultiNet initialized successfully");
 }
 
 void AfeWakeWord::Feed(const std::vector<int16_t>& data) {
@@ -143,18 +189,64 @@ void AfeWakeWord::AudioDetectionTask() {
 
         auto res = afe_iface_->fetch_with_delay(afe_data_, portMAX_DELAY);
         if (res == nullptr || res->ret_value == ESP_FAIL) {
-            continue;;
+            continue;
         }
 
         // Store the wake word data for voice recognition, like who is speaking
         StoreWakeWordData(res->data, res->data_size / sizeof(int16_t));
 
+        // Wake word detection
         if (res->wakeup_state == WAKENET_DETECTED) {
-            Stop();
             last_detected_wake_word_ = wake_words_[res->wakenet_model_index - 1];
+            ESP_LOGI(TAG, "Wake word detected: %s", last_detected_wake_word_.c_str());
 
             if (wake_word_detected_callback_) {
                 wake_word_detected_callback_(last_detected_wake_word_);
+            }
+
+            // In offline mode, enter command mode and keep detection running
+            // In online mode, stop detection so audio can be sent to server for conversation
+            if (offline_mode_enabled_ && multinet_iface_ != nullptr && multinet_model_ != nullptr) {
+                command_mode_active_ = true;
+                multinet_iface_->clean(multinet_model_);
+                ESP_LOGI(TAG, "Entering offline command mode, listening for commands...");
+            } else {
+                // Online mode: stop detection, server handles conversation via xiaozhi protocol
+                Stop();
+                ESP_LOGI(TAG, "Wake word detected in online mode, stopping detection for server conversation");
+            }
+        }
+
+        // Command detection (only active in offline mode after wake word)
+        if (offline_mode_enabled_ && command_mode_active_ && multinet_iface_ != nullptr && multinet_model_ != nullptr) {
+            esp_mn_state_t mn_state = multinet_iface_->detect(multinet_model_, res->data);
+
+            if (mn_state == ESP_MN_STATE_DETECTING) {
+                // Still detecting, continue listening
+                continue;
+            }
+
+            if (mn_state == ESP_MN_STATE_DETECTED) {
+                // Command detected!
+                esp_mn_results_t *mn_result = multinet_iface_->get_results(multinet_model_);
+                ESP_LOGI(TAG, "Command detected! ID: %d, String: %s, Prob: %.2f",
+                    mn_result->command_id[0], mn_result->string, mn_result->prob[0]);
+
+                if (command_detected_callback_) {
+                    command_detected_callback_(mn_result->command_id[0], std::string(mn_result->string));
+                }
+
+                // Exit command mode and re-enable wake word (don't call Start(), just reset flag)
+                command_mode_active_ = false;
+                afe_iface_->enable_wakenet(afe_data_);
+                ESP_LOGI(TAG, "Command handled, returning to wake word mode");
+            }
+
+            if (mn_state == ESP_MN_STATE_TIMEOUT) {
+                // Timeout - no command detected
+                ESP_LOGW(TAG, "Command detection timeout, returning to wake word mode");
+                command_mode_active_ = false;
+                afe_iface_->enable_wakenet(afe_data_);
             }
         }
     }

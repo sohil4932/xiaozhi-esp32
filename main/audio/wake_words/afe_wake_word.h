@@ -6,6 +6,8 @@
 #include <freertos/event_groups.h>
 
 #include <esp_afe_sr_models.h>
+#include <esp_mn_iface.h>
+#include <esp_mn_models.h>
 #include <esp_nsn_models.h>
 #include <model_path.h>
 
@@ -27,8 +29,11 @@ public:
     bool Initialize(AudioCodec* codec, srmodel_list_t* models_list);
     void Feed(const std::vector<int16_t>& data);
     void OnWakeWordDetected(std::function<void(const std::string& wake_word)> callback);
+    void OnCommandDetected(std::function<void(int command_id, const std::string& command_string)> callback);
     void Start();
     void Stop();
+    void SetOfflineModeEnabled(bool enabled) { offline_mode_enabled_ = enabled; }
+    bool IsOfflineModeEnabled() const { return offline_mode_enabled_; }
     size_t GetFeedSize();
     void EncodeWakeWordData();
     bool GetWakeWordOpus(std::vector<uint8_t>& opus);
@@ -47,6 +52,13 @@ private:
     std::vector<int16_t> input_buffer_;
     std::mutex input_buffer_mutex_;
 
+    // MultiNet command recognition
+    esp_mn_iface_t* multinet_iface_ = nullptr;
+    model_iface_data_t* multinet_model_ = nullptr;
+    std::function<void(int command_id, const std::string& command_string)> command_detected_callback_;
+    bool command_mode_active_ = false;
+    bool offline_mode_enabled_ = false;  // When true, offline commands work continuously without stopping
+
     TaskHandle_t wake_word_encode_task_ = nullptr;
     StaticTask_t* wake_word_encode_task_buffer_ = nullptr;
     StackType_t* wake_word_encode_task_stack_ = nullptr;
@@ -57,6 +69,7 @@ private:
 
     void StoreWakeWordData(const int16_t* data, size_t size);
     void AudioDetectionTask();
+    void InitializeMultiNet();
 };
 
 #endif
