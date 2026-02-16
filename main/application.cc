@@ -112,6 +112,11 @@ void Application::Initialize() {
     callbacks.on_vad_change = [this](bool speaking) {
         xEventGroupSetBits(event_group_, MAIN_EVENT_VAD_CHANGE);
     };
+    callbacks.on_command_listening_change = [this](bool listening) {
+        ESP_LOGI("Application", "Command listening change: listening=%d (skipping display update to avoid blocking)", listening);
+        // Display updates disabled - SetStatus() triggers audio playback which conflicts
+        // with AudioService trying to stop playback, causing deadlock
+    };
     audio_service_.SetCallbacks(callbacks);
 
     // Add state change listeners
@@ -951,8 +956,9 @@ void Application::HandleStateChangedEvent() {
             audio_service_.ResetDecoder();
             break;
         case kDeviceStateWifiConfiguring:
-            // Enable ONLY wake word detection for offline mode (BlueFi + offline commands in parallel)
-            // DO NOT enable voice processing - AfeWakeWord has its own AFE instance
+            // Enable offline mode for screen-tap triggered offline commands (BlueFi + offline commands in parallel)
+            // In offline mode: AFE will start only when user taps screen to listen for commands
+            // In online mode: AFE runs continuously for audio processing (no wake word, just audio to server)
 
             // Set display first
             display->SetChatMessage("system", "");  // Clear the init message
@@ -963,7 +969,7 @@ void Application::HandleStateChangedEvent() {
             // This matches the timing gap in online mode (470ms) where emotions render successfully
             {
                 // Pre-enable codec input NOW to allocate DMA buffers while memory is available
-                // This prevents DMA allocation failure when wake word detection starts later
+                // This prevents DMA allocation failure when audio starts later
                 auto codec = board.GetAudioCodec();
                 if (!codec->input_enabled()) {
                     codec->EnableInput(true);

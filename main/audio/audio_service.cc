@@ -304,6 +304,12 @@ void AudioService::AudioOutputTask() {
         audio_queue_cv_.notify_all();
         lock.unlock();
 
+        // Don't re-enable output if we're in command listening mode (offline)
+        if (command_listening_active_.load()) {
+            ESP_LOGD("AudioService", "Skipping output - command listening active");
+            continue;
+        }
+
         if (!codec_->output_enabled()) {
             esp_timer_stop(audio_power_timer_);
             esp_timer_start_periodic(audio_power_timer_, AUDIO_POWER_CHECK_INTERVAL_MS * 1000);
@@ -788,12 +794,28 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
             if (playback_task_handle == nullptr) {
                 playback_queue = xQueueCreate(3, sizeof(playback_msg));
 
+                struct TaskArgs {
+                    QueueHandle_t queue;
+                    AudioService* audio_service;
+                };
+
+                static TaskArgs task_args = {playback_queue, this};
+
                 xTaskCreate([](void* arg) {
-                    auto* queue = static_cast<QueueHandle_t>(arg);
+                    auto* args = static_cast<TaskArgs*>(arg);
+                    auto* queue = args->queue;
+                    auto* audio_service = args->audio_service;
                     playback_msg msg;
 
                     while (true) {
                         if (xQueueReceive(queue, &msg, portMAX_DELAY) == pdTRUE) {
+                            // Check if playback has been aborted before processing
+                            if (audio_service->abort_playback_.load()) {
+                                ESP_LOGI("AudioService", "Playback task: Command ignored due to abort flag");
+                                audio_service->abort_playback_.store(false);
+                                continue;
+                            }
+
                             auto& board = Board::GetInstance();
                             auto* sd = board.GetSDCard();
 
@@ -804,18 +826,21 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
 
                             const char* folder = nullptr;
                             switch (msg.cmd_id) {
-                                case 0: folder = "/sdcard/jokes"; break;
-                                case 1: folder = "/sdcard/stories"; break;
-                                case 2: folder = "/sdcard/goodnight"; break;
-                                case 3:
-                                    // Volume Up
-                                    ESP_LOGI("AudioService", "Volume Up command");
-                                    board.GetAudioCodec()->IncreaseVolume(10);
+                                case 0:
+                                    // "tell me a joke"
+                                    folder = "/sdcard/jokes";
                                     break;
-                                case 4:
-                                    // Volume Down
-                                    ESP_LOGI("AudioService", "Volume Down command");
-                                    board.GetAudioCodec()->DecreaseVolume(10);
+                                case 1:
+                                    // "tell me a story"
+                                    folder = "/sdcard/stories";
+                                    break;
+                                case 2:
+                                    // "good night"
+                                    folder = "/sdcard/goodnight";
+                                    break;
+                                case 3:
+                                    // "make me laugh"
+                                    folder = "/sdcard/jokes";
                                     break;
                             }
 
@@ -825,7 +850,7 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
                             }
                         }
                     }
-                }, "offline_play", 8192, playback_queue, 5, &playback_task_handle);
+                }, "offline_play", 8192, &task_args, 5, &playback_task_handle);
             }
 
             afe_wake_word->OnCommandDetected([this, &audio_player](int command_id, const std::string& command_string) {
@@ -834,6 +859,60 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
                 // Send to playback task
                 playback_msg msg = {&audio_player, command_id};
                 xQueueSend(playback_queue, &msg, 0);
+            });
+
+            // Setup command listening change callback
+            afe_wake_word->OnCommandListeningChange([this, playback_queue](bool listening) {
+                ESP_LOGI("AudioService", "Command listening change callback: listening=%d", listening);
+
+                if (listening) {
+                    // Stop any ongoing playback when entering command listening mode
+                    ESP_LOGI("AudioService", "Stopping playback for command listening");
+
+                    // Set command listening flag to prevent audio output task from re-enabling output
+                    command_listening_active_.store(true);
+
+                    // Check if output is currently enabled (indicates ongoing playback)
+                    bool output_was_enabled = codec_->output_enabled();
+                    ESP_LOGI("AudioService", "Output currently enabled: %d", output_was_enabled);
+
+                    // Clear the offline playback queue
+                    playback_msg dummy;
+                    int cleared_count = 0;
+                    while (xQueueReceive(playback_queue, &dummy, 0) == pdTRUE) {
+                        cleared_count++;
+                    }
+                    ESP_LOGI("AudioService", "Cleared %d queued playback commands", cleared_count);
+
+                    // Set abort flag if there was ongoing playback OR queued commands
+                    // This prevents the playback task from starting new playback
+                    if (cleared_count > 0 || output_was_enabled) {
+                        ESP_LOGI("AudioService", "Setting abort flag (cleared=%d, output_enabled=%d)",
+                                 cleared_count, output_was_enabled);
+                        abort_playback_.store(true);
+                    } else {
+                        ESP_LOGI("AudioService", "No active playback, abort flag NOT set");
+                    }
+
+                    // Clear audio decode/playback queues
+                    ResetDecoder();
+
+                    // Disable output
+                    codec_->EnableOutput(false);
+                    ESP_LOGI("AudioService", "Playback stopped, output disabled");
+                } else {
+                    // Clear command listening flag when exiting
+                    command_listening_active_.store(false);
+                }
+
+                // Forward to application callback for display updates
+                ESP_LOGI("AudioService", "Forwarding to application callback");
+                if (callbacks_.on_command_listening_change) {
+                    callbacks_.on_command_listening_change(listening);
+                    ESP_LOGI("AudioService", "Application callback completed");
+                }
+
+                ESP_LOGI("AudioService", "Command listening callback returning");
             });
         }
     }

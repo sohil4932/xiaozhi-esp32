@@ -30,11 +30,13 @@ public:
     void Feed(const std::vector<int16_t>& data);
     void OnWakeWordDetected(std::function<void(const std::string& wake_word)> callback);
     void OnCommandDetected(std::function<void(int command_id, const std::string& command_string)> callback);
+    void OnCommandListeningChange(std::function<void(bool listening)> callback);  // Callback when command listening state changes
     void Start();
     void Stop();
     void SetOfflineModeEnabled(bool enabled) { offline_mode_enabled_ = enabled; }
     bool IsOfflineModeEnabled() const { return offline_mode_enabled_; }
-    void TriggerCommandListening();  // Manually trigger command listening mode
+    void TriggerCommandListening();  // Manually trigger command listening mode (loads MultiNet)
+    void StopCommandListening();  // Stop command listening and unload MultiNet to free memory
     size_t GetFeedSize();
     void EncodeWakeWordData();
     bool GetWakeWordOpus(std::vector<uint8_t>& opus);
@@ -57,6 +59,7 @@ private:
     esp_mn_iface_t* multinet_iface_ = nullptr;
     model_iface_data_t* multinet_model_ = nullptr;
     std::function<void(int command_id, const std::string& command_string)> command_detected_callback_;
+    std::function<void(bool listening)> command_listening_change_callback_;
     bool command_mode_active_ = false;
     bool offline_mode_enabled_ = false;  // When true, offline commands work continuously without stopping
 
