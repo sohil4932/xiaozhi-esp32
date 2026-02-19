@@ -113,9 +113,32 @@ void Application::Initialize() {
         xEventGroupSetBits(event_group_, MAIN_EVENT_VAD_CHANGE);
     };
     callbacks.on_command_listening_change = [this](bool listening) {
-        ESP_LOGI("Application", "Command listening change: listening=%d (skipping display update to avoid blocking)", listening);
-        // Display updates disabled - SetStatus() triggers audio playback which conflicts
-        // with AudioService trying to stop playback, causing deadlock
+        ESP_LOGI("Application", "Command listening change: listening=%d", listening);
+        auto& board = Board::GetInstance();
+        auto display = board.GetDisplay();
+        if (display) {
+            if (listening) {
+                // Change to neutral expression when listening for command
+                display->SetEmotion("neutral");
+            } else {
+                // Return to happy expression when done listening
+                display->SetEmotion("happy");
+            }
+        }
+    };
+    callbacks.on_playback_change = [this](bool playing) {
+        ESP_LOGI("Application", "Playback change: playing=%d", playing);
+        auto& board = Board::GetInstance();
+        auto display = board.GetDisplay();
+        if (display) {
+            if (playing) {
+                // Change to happy expression when speaking/playing
+                display->SetEmotion("happy");
+            } else {
+                // Return to neutral expression when playback stopped
+                display->SetEmotion("neutral");
+            }
+        }
     };
     audio_service_.SetCallbacks(callbacks);
 

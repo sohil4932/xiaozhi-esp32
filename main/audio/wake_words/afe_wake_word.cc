@@ -249,13 +249,15 @@ void AfeWakeWord::AudioDetectionTask() {
                     ESP_LOGI(TAG, "Command detected! ID: %d, String: %s, Prob: %.2f",
                         mn_result->command_id[0], mn_result->string, mn_result->prob[0]);
 
+                    // Exit command mode first - this will clear abort flag via callback
+                    cmd_frame_count = 0;  // Reset frame counter
+                    StopCommandListening();  // This calls listening=false callback which clears abort flag
+
+                    // Now trigger the command - abort flag is cleared so playback will work
                     if (command_detected_callback_) {
                         command_detected_callback_(mn_result->command_id[0], std::string(mn_result->string));
                     }
 
-                    // Exit command mode and unload MultiNet to free memory for display during playback
-                    cmd_frame_count = 0;  // Reset frame counter
-                    StopCommandListening();  // This unloads MultiNet and frees memory
                     ESP_LOGI(TAG, "Command handled, MultiNet unloaded");
                 }
 

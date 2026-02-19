@@ -81,6 +81,7 @@ struct AudioServiceCallbacks {
     std::function<void(bool)> on_vad_change;
     std::function<void(void)> on_audio_testing_queue_full;
     std::function<void(bool)> on_command_listening_change;  // true = listening started, false = stopped
+    std::function<void(bool)> on_playback_change;  // true = playback started, false = stopped
 };
 
 

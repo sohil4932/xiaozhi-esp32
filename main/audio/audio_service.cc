@@ -670,6 +670,11 @@ void AudioService::SetCallbacks(AudioServiceCallbacks& callbacks) {
 }
 
 void AudioService::PlaySound(const std::string_view& ogg) {
+    // Notify that playback is starting
+    if (callbacks_.on_playback_change) {
+        callbacks_.on_playback_change(true);
+    }
+
     if (!codec_->output_enabled()) {
         esp_timer_stop(audio_power_timer_);
         esp_timer_start_periodic(audio_power_timer_, AUDIO_POWER_CHECK_INTERVAL_MS * 1000);
@@ -827,11 +832,11 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
                             const char* folder = nullptr;
                             switch (msg.cmd_id) {
                                 case 0:
-                                    // "tell me a joke"
+                                    // "tell me joke"
                                     folder = "/sdcard/jokes";
                                     break;
                                 case 1:
-                                    // "tell me a story"
+                                    // "tell me story"
                                     folder = "/sdcard/stories";
                                     break;
                                 case 2:
@@ -841,6 +846,10 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
                                 case 3:
                                     // "make me laugh"
                                     folder = "/sdcard/jokes";
+                                    break;
+                                case 4:
+                                    // "sing a song"
+                                    folder = "/sdcard/songs";
                                     break;
                             }
 
@@ -890,6 +899,11 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
                         ESP_LOGI("AudioService", "Setting abort flag (cleared=%d, output_enabled=%d)",
                                  cleared_count, output_was_enabled);
                         abort_playback_.store(true);
+
+                        // Notify that playback stopped
+                        if (callbacks_.on_playback_change) {
+                            callbacks_.on_playback_change(false);
+                        }
                     } else {
                         ESP_LOGI("AudioService", "No active playback, abort flag NOT set");
                     }
@@ -903,6 +917,9 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
                 } else {
                     // Clear command listening flag when exiting
                     command_listening_active_.store(false);
+                    // Also clear abort flag when exiting command listening mode
+                    abort_playback_.store(false);
+                    ESP_LOGI("AudioService", "Command listening ended, abort flag cleared");
                 }
 
                 // Forward to application callback for display updates
