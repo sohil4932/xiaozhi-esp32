@@ -1,0 +1,62 @@
+# Documentation: .gitlab/ci/README.md#manifest-file-to-control-the-buildtest-apps
+
+examples/chinese_tts:
+  enable:
+    - if: IDF_TARGET in ["esp32", "esp32s3", "esp32p4"]
+      temporary: false
+      reason: the other targets are not tested yet
+
+examples/cn_speech_commands_recognition:
+  enable:
+    - if: IDF_TARGET in ["esp32", "esp32s3", "esp32p4"]
+      temporary: false
+      reason: the other targets are not tested yet
+
+examples/en_speech_commands_recognition:
+  enable:
+    - if: IDF_TARGET in ["esp32s3", "esp32p4"]
+      temporary: false
+      reason: the other targets are not tested yet
+
+examples/usb_mic_recorder:
+  enable:
+    - if: IDF_TARGET == "esp32s3"
+      temporary: false
+      reason: the other targets are not tested yet
+
+examples/voice_communication:
+  enable:
+    - if: IDF_TARGET in ["esp32s3", "esp32p4"]
+      temporary: false
+      reason: the other targets are not tested yet
+
+examples/voice_activity_detection:
+  enable:
+    - if: IDF_TARGET in ["esp32", "esp32s3", "esp32p4"]
+      temporary: false
+      reason: the other targets are not tested yet
+
+examples/wake_word_detection/afe:
+  enable:
+    - if: IDF_TARGET in ["esp32", "esp32s3", "esp32p4"]
+      temporary: false
+      reason: the other targets are not tested yet
+
+examples/wake_word_detection/wakenet:
+  enable:
+    - if: IDF_TARGET in ["esp32", "esp32s3", "esp32p4", "esp32c3", "esp32c6", "esp32s2"]
+      temporary: false
+      reason: the other targets are not tested yet
+
+examples/direction_of_arrival:
+  enable:
+    - if: IDF_TARGET in ["esp32", "esp32s3", "esp32p4"]
+      temporary: false
+      reason: the other targets are not tested yet
+
+
+examples/deep_noise_suppression:
+  enable:
+    - if: IDF_TARGET in ["esp32s3", "esp32p4"]
+      temporary: false
+      reason: the other targets are not tested yet      

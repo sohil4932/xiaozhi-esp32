@@ -433,6 +433,19 @@ void AudioService::OpusCodecTask() {
                             std::lock_guard<std::mutex> lock2(audio_queue_mutex_);
                             audio_send_queue_.push_back(std::move(packet));
                         }
+                        static int packet_count = 0;
+                        static int64_t last_log_time = 0;
+                        packet_count++;
+                        int64_t now = esp_timer_get_time();
+                        if (last_log_time == 0) {
+                            last_log_time = now;
+                        }
+                        if (now - last_log_time >= 3000000) { // Every 3 seconds
+                            float packets_per_sec = packet_count / 3.0f;
+                            ESP_LOGI(TAG, "Audio send rate: %.1f packets/sec (expected: 16.7 for 60ms frames)", packets_per_sec);
+                            packet_count = 0;
+                            last_log_time = now;
+                        }
                         if (callbacks_.on_send_queue_available) {
                             callbacks_.on_send_queue_available();
                         }
@@ -591,9 +604,10 @@ void AudioService::EnableWakeWordDetection(bool enable) {
 }
 
 void AudioService::EnableVoiceProcessing(bool enable) {
-    ESP_LOGD(TAG, "%s voice processing", enable ? "Enabling" : "Disabling");
+    ESP_LOGI(TAG, "%s voice processing", enable ? "Enabling" : "Disabling");
     if (enable) {
         if (!audio_processor_initialized_) {
+            ESP_LOGI(TAG, "Initializing audio processor for first time");
             audio_processor_->Initialize(codec_, OPUS_FRAME_DURATION_MS, models_list_);
             audio_processor_initialized_ = true;
         }
@@ -609,11 +623,15 @@ void AudioService::EnableVoiceProcessing(bool enable) {
                 esp_ae_rate_cvt_reset(input_resampler_);
             }
         }
+        ESP_LOGI(TAG, "Starting audio processor");
         audio_processor_->Start();
         xEventGroupSetBits(event_group_, AS_EVENT_AUDIO_PROCESSOR_RUNNING);
+        ESP_LOGI(TAG, "Voice processing enabled - microphone will send audio to server");
     } else {
+        ESP_LOGI(TAG, "Stopping audio processor");
         audio_processor_->Stop();
         xEventGroupClearBits(event_group_, AS_EVENT_AUDIO_PROCESSOR_RUNNING);
+        ESP_LOGI(TAG, "Voice processing disabled - microphone stopped");
     }
 }
 

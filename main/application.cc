@@ -555,8 +555,18 @@ void Application::InitializeProtocol() {
     });
     
     protocol_->OnIncomingAudio([this](std::unique_ptr<AudioStreamPacket> packet) {
-        if (GetDeviceState() == kDeviceStateSpeaking) {
+        auto state = GetDeviceState();
+        ESP_LOGI(TAG, "Received audio packet: size=%u, current_state=%d (2=Listening, 3=Speaking)",
+                 packet->payload.size(), state);
+        if (state == kDeviceStateSpeaking) {
             audio_service_.PushPacketToDecodeQueue(std::move(packet));
+        } else if (state == kDeviceStateListening && listening_mode_ == kListeningModeRealtime) {
+            // In realtime mode, play audio even while listening (full-duplex)
+            ESP_LOGI(TAG, "Realtime mode: Auto-transitioning to Speaking to play audio");
+            SetDeviceState(kDeviceStateSpeaking);
+            audio_service_.PushPacketToDecodeQueue(std::move(packet));
+        } else {
+            ESP_LOGW(TAG, "Dropping audio packet - not in Speaking state and not realtime mode");
         }
     });
     
@@ -941,6 +951,9 @@ void Application::HandleStateChangedEvent() {
             display->SetEmotion("neutral");
             audio_service_.SetOfflineModeEnabled(false);  // Disable offline mode in online state
 
+            ESP_LOGI(TAG, "Listening state: play_popup=%d, processor_running=%d, mode=%d",
+                     play_popup_on_listening_, audio_service_.IsAudioProcessorRunning(), listening_mode_);
+
             // Make sure the audio processor is running
             if (play_popup_on_listening_ || !audio_service_.IsAudioProcessorRunning()) {
                 // For auto mode, wait for playback queue to be empty before enabling voice processing
@@ -948,10 +961,13 @@ void Application::HandleStateChangedEvent() {
                 if (listening_mode_ == kListeningModeAutoStop) {
                     audio_service_.WaitForPlaybackQueueEmpty();
                 }
-                
+
                 // Send the start listening command
+                ESP_LOGI(TAG, "Sending start listening and enabling voice processing");
                 protocol_->SendStartListening(listening_mode_);
                 audio_service_.EnableVoiceProcessing(true);
+            } else {
+                ESP_LOGW(TAG, "Skipping voice processing enable - already running");
             }
 
 #ifdef CONFIG_WAKE_WORD_DETECTION_IN_LISTENING
@@ -971,10 +987,15 @@ void Application::HandleStateChangedEvent() {
         case kDeviceStateSpeaking:
             display->SetStatus(Lang::Strings::SPEAKING);
 
+            ESP_LOGI(TAG, "Speaking state: listening_mode=%d (0=AutoStop, 1=Manual, 2=Realtime), aec_mode=%d",
+                     listening_mode_, aec_mode_);
             if (listening_mode_ != kListeningModeRealtime) {
+                ESP_LOGI(TAG, "NOT realtime mode - disabling voice processing");
                 audio_service_.EnableVoiceProcessing(false);
                 // Only AFE wake word can be detected in speaking mode
                 audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
+            } else {
+                ESP_LOGI(TAG, "REALTIME mode - keeping voice processing ACTIVE for full-duplex");
             }
             audio_service_.ResetDecoder();
             break;
@@ -1049,6 +1070,9 @@ void Application::AbortSpeaking(AbortReason reason) {
 }
 
 void Application::SetListeningMode(ListeningMode mode) {
+    const char* mode_str = mode == kListeningModeRealtime ? "Realtime" :
+                          mode == kListeningModeManualStop ? "Manual" : "AutoStop";
+    ESP_LOGI(TAG, "SetListeningMode: %s (aec_mode=%d)", mode_str, aec_mode_);
     listening_mode_ = mode;
     SetDeviceState(kDeviceStateListening);
 }

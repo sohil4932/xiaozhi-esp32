@@ -312,6 +312,12 @@ std::string MqttProtocol::GetHelloMessage() {
     cJSON_AddNumberToObject(audio_params, "channels", 1);
     cJSON_AddNumberToObject(audio_params, "frame_duration", OPUS_FRAME_DURATION_MS);
     cJSON_AddItemToObject(root, "audio_params", audio_params);
+
+    // Print the hello message we're sending
+    auto json_str_formatted = cJSON_Print(root);
+    ESP_LOGI(TAG, "Sending Client Hello: %s", json_str_formatted);
+    cJSON_free(json_str_formatted);
+
     auto json_str = cJSON_PrintUnformatted(root);
     std::string message(json_str);
     cJSON_free(json_str);
@@ -320,6 +326,11 @@ std::string MqttProtocol::GetHelloMessage() {
 }
 
 void MqttProtocol::ParseServerHello(const cJSON* root) {
+    // Print the entire server hello message
+    auto json_str = cJSON_Print(root);
+    ESP_LOGI(TAG, "Server Hello: %s", json_str);
+    cJSON_free(json_str);
+
     auto transport = cJSON_GetObjectItem(root, "transport");
     if (transport == nullptr || strcmp(transport->valuestring, "udp") != 0) {
         ESP_LOGE(TAG, "Unsupported transport: %s", transport->valuestring);
@@ -338,10 +349,12 @@ void MqttProtocol::ParseServerHello(const cJSON* root) {
         auto sample_rate = cJSON_GetObjectItem(audio_params, "sample_rate");
         if (cJSON_IsNumber(sample_rate)) {
             server_sample_rate_ = sample_rate->valueint;
+            ESP_LOGI(TAG, "Server output sample rate: %d", server_sample_rate_);
         }
         auto frame_duration = cJSON_GetObjectItem(audio_params, "frame_duration");
         if (cJSON_IsNumber(frame_duration)) {
             server_frame_duration_ = frame_duration->valueint;
+            ESP_LOGI(TAG, "Server frame duration: %d ms", server_frame_duration_);
         }
     }
 
