@@ -13,7 +13,6 @@
 #include <time.h>
 
 // ESP-IDF headers
-#include <esp_err.h>
 #include <esp_log.h>
 #include <esp_lcd_panel_io.h>
 #include <esp_timer.h>
@@ -64,11 +63,7 @@ static void OnFlushCallback(int x_start, int y_start, int x_end, int y_end, cons
 {
     esp_lcd_panel_handle_t panel = (esp_lcd_panel_handle_t)emote_get_user_data(handle);
     if (panel != nullptr) {
-        esp_err_t ret = esp_lcd_panel_draw_bitmap(panel, x_start, y_start, x_end, y_end, data);
-        if (ret != ESP_OK) {
-            ESP_LOGW(TAG, "Panel draw failed (%s), dropping frame", esp_err_to_name(ret));
-            emote_notify_flush_finished(handle);
-        }
+        esp_lcd_panel_draw_bitmap(panel, x_start, y_start, x_end, y_end, data);
     }
 }
 
@@ -92,7 +87,7 @@ static emote_handle_t InitializeEmote(const esp_lcd_panel_handle_t panel, const 
         .gfx_emote = {
             .h_res = width,
             .v_res = height,
-            .fps = 20,
+            .fps = 30,
         },
         .buffers = {
             .buf_pixels = static_cast<size_t>(width * 16),
@@ -139,117 +134,9 @@ EmoteDisplay::~EmoteDisplay()
     }
 }
 
-bool EmoteDisplay::EnsureAssetsReady()
-{
-    if (!emote_handle_) {
-        return false;
-    }
-
-    if (assets_ready_) {
-        return true;
-    }
-
-    assets_ready_ = (emote_get_obj_by_name(emote_handle_, EMT_DEF_ELEM_STATUS_ICON) != nullptr);
-    return assets_ready_;
-}
-
-void EmoteDisplay::HideStatusIconOnly()
-{
-    if (!EnsureAssetsReady()) {
-        return;
-    }
-
-    gfx_obj_t* status_icon = emote_get_obj_by_name(emote_handle_, EMT_DEF_ELEM_STATUS_ICON);
-    if (!status_icon) {
-        return;
-    }
-
-    if (emote_lock(emote_handle_) != ESP_OK) {
-        return;
-    }
-    gfx_obj_set_visible(status_icon, false);
-    emote_unlock(emote_handle_);
-}
-
-void EmoteDisplay::SetStatusIconCentered(bool centered)
-{
-    if (!EnsureAssetsReady() || status_icon_centered_ == centered) {
-        return;
-    }
-
-    gfx_obj_t* status_icon = emote_get_obj_by_name(emote_handle_, EMT_DEF_ELEM_STATUS_ICON);
-    if (!status_icon) {
-        return;
-    }
-
-    if (emote_lock(emote_handle_) != ESP_OK) {
-        return;
-    }
-
-    if (!status_icon_pos_cached_) {
-        gfx_coord_t x = 0;
-        gfx_coord_t y = 0;
-        if (gfx_obj_get_pos(status_icon, &x, &y) == ESP_OK) {
-            status_icon_default_x_ = static_cast<int16_t>(x);
-            status_icon_default_y_ = static_cast<int16_t>(y);
-            status_icon_pos_cached_ = true;
-        }
-    }
-
-    if (centered) {
-        gfx_obj_align(status_icon, GFX_ALIGN_TOP_MID, 0, 18);
-    } else if (status_icon_pos_cached_) {
-        gfx_obj_set_pos(status_icon, status_icon_default_x_, status_icon_default_y_);
-    }
-
-    status_icon_centered_ = centered;
-    emote_unlock(emote_handle_);
-}
-
-void EmoteDisplay::StopListenAnimation()
-{
-    if (!EnsureAssetsReady()) {
-        return;
-    }
-
-    gfx_obj_t* listen_anim = emote_get_obj_by_name(emote_handle_, EMT_DEF_ELEM_LISTEN_ANIM);
-    if (!listen_anim) {
-        return;
-    }
-
-    if (emote_lock(emote_handle_) != ESP_OK) {
-        return;
-    }
-    gfx_anim_stop(listen_anim);
-    gfx_obj_set_visible(listen_anim, false);
-    emote_unlock(emote_handle_);
-}
-
-void EmoteDisplay::ApplyStatusIconState()
-{
-    if (!EnsureAssetsReady()) {
-        return;
-    }
-
-    if (!speaker_icon_visible_ && !mic_icon_visible_) {
-        SetStatusIconCentered(false);
-        HideStatusIconOnly();
-        return;
-    }
-
-    const char* event = speaker_icon_visible_ ? EMOTE_MGR_EVT_SPEAK : EMOTE_MGR_EVT_LISTEN;
-    esp_err_t ret = emote_set_event_msg(emote_handle_, event, nullptr);
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to apply status icon event %s: %s", event, esp_err_to_name(ret));
-    }
-
-    StopListenAnimation();
-    SetStatusIconCentered(true);
-}
-
 void EmoteDisplay::SetEmotion(const char* const emotion)
 {
-    if (!EnsureAssetsReady() || !emotion || strlen(emotion) == 0) {
+    if (!emote_handle_ || !emotion || strlen(emotion) == 0) {
         return;
     }
     emote_set_anim_emoji(emote_handle_, emotion);
@@ -258,7 +145,7 @@ void EmoteDisplay::SetEmotion(const char* const emotion)
 void EmoteDisplay::SetChatMessage(const char* const role, const char* const content)
 {
     ESP_LOGI(TAG, "SetChatMessage: %s, %s", role, content);
-    if (EnsureAssetsReady() && content && strlen(content) > 0) {
+    if (emote_handle_ && content && strlen(content) > 0) {
         if ((std::strcmp(role, "system") == 0) && std::strstr(content, "xiaozhi.me")) {
             size_t len = strlen(content);
             char* new_content = new char[len + 1];
@@ -272,38 +159,14 @@ void EmoteDisplay::SetChatMessage(const char* const role, const char* const cont
     }
 }
 
-void EmoteDisplay::ShowMicIcon(bool show) {
-    if (mic_icon_visible_ == show) {
-        return;
-    }
-    ESP_LOGI(TAG, "Mic icon: %d", show);
-    mic_icon_visible_ = show;
-    ApplyStatusIconState();
-}
-
-void EmoteDisplay::ShowSpeakerIcon(bool show) {
-    if (speaker_icon_visible_ == show) {
-        return;
-    }
-    ESP_LOGI(TAG, "Speaker icon: %d", show);
-    speaker_icon_visible_ = show;
-    ApplyStatusIconState();
-}
-
 void EmoteDisplay::SetStatus(const char* const status)
 {
     ESP_LOGI(TAG, "SetStatus: %s", status);
-    if (EnsureAssetsReady() && status && strlen(status) > 0) {
-        SetStatusIconCentered(false);
+    if (emote_handle_ && status && strlen(status) > 0) {
         if (std::strcmp(status, Lang::Strings::LISTENING) == 0) {
             emote_set_event_msg(emote_handle_, EMOTE_MGR_EVT_LISTEN, NULL);
         } else if (std::strcmp(status, Lang::Strings::STANDBY) == 0) {
-            // Avoid idle warnings on layouts that don't define clock label/timer.
-            if (emote_get_obj_by_name(emote_handle_, EMT_DEF_ELEM_CLOCK_LABEL) != nullptr) {
-                emote_set_event_msg(emote_handle_, EMOTE_MGR_EVT_IDLE, NULL);
-            } else {
-                HideStatusIconOnly();
-            }
+            emote_set_event_msg(emote_handle_, EMOTE_MGR_EVT_IDLE, NULL);
         } else if (std::strcmp(status, Lang::Strings::SPEAKING) == 0) {
             emote_set_event_msg(emote_handle_, EMOTE_MGR_EVT_SPEAK, NULL);
         } else if (std::strcmp(status, Lang::Strings::ERROR) == 0) {
@@ -315,9 +178,27 @@ void EmoteDisplay::SetStatus(const char* const status)
 void EmoteDisplay::ShowNotification(const char* notification, int duration_ms)
 {
     ESP_LOGI(TAG, "ShowNotification: %s", notification);
-    if (EnsureAssetsReady() && notification && strlen(notification) > 0) {
-        SetStatusIconCentered(false);
+    if (emote_handle_ && notification && strlen(notification) > 0) {
         emote_set_event_msg(emote_handle_, EMOTE_MGR_EVT_SYS, notification);
+    }
+}
+
+void EmoteDisplay::TriggerEmoteEvent(const char* event_type)
+{
+    if (!emote_handle_ || !event_type) {
+        return;
+    }
+
+    ESP_LOGI(TAG, "TriggerEmoteEvent: %s", event_type);
+
+    // Only trigger emote events, no CLOCK_LABEL updates
+    // This is lightweight and doesn't cause SPI queue overflow
+    if (std::strcmp(event_type, "LISTEN") == 0) {
+        emote_set_event_msg(emote_handle_, EMOTE_MGR_EVT_LISTEN, NULL);
+    } else if (std::strcmp(event_type, "SPEAK") == 0) {
+        emote_set_event_msg(emote_handle_, EMOTE_MGR_EVT_SPEAK, NULL);
+    } else if (std::strcmp(event_type, "IDLE") == 0) {
+        emote_set_event_msg(emote_handle_, EMOTE_MGR_EVT_IDLE, NULL);
     }
 }
 

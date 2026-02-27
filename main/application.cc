@@ -1,6 +1,7 @@
 #include "application.h"
 #include "board.h"
 #include "display.h"
+#include "display/emote_display.h"
 #include "system_info.h"
 #include "audio_codec.h"
 #include "mqtt_protocol.h"
@@ -118,29 +119,24 @@ void Application::Initialize() {
         xEventGroupSetBits(event_group_, MAIN_EVENT_VAD_CHANGE);
     };
     callbacks.on_command_listening_change = [this](bool listening) {
-        ESP_LOGI("Application", "Command listening change: listening=%d", listening);
-        Schedule([listening]() {
-        auto& board = Board::GetInstance();
-        auto display = board.GetDisplay();
-        if (display) {
-            display->ShowMicIcon(listening);
-            if (listening) {
-                display->ShowSpeakerIcon(false);
-            }
-        }
-        });
+        ESP_LOGI("Application", "Command listening change: listening=%d (offline mode - no display updates)", listening);
+        // Skip all display updates for offline mode to prevent SPI queue overflow
     };
     callbacks.on_playback_change = [this](bool playing) {
         ESP_LOGI("Application", "Playback change: playing=%d", playing);
-        Schedule([playing]() {
-        auto& board = Board::GetInstance();
-        auto display = board.GetDisplay();
-        if (display) {
-            display->ShowSpeakerIcon(playing);
-            if (playing) {
-                display->ShowMicIcon(false);
-            }
+
+        // Skip visual feedback entirely in offline mode
+        if (audio_service_.IsOfflineModeEnabled()) {
+            return;
         }
+
+        // Online mode only: Use SetStatus
+        Schedule([playing]() {
+            auto& board = Board::GetInstance();
+            auto display = board.GetDisplay();
+            if (display) {
+                display->SetStatus(playing ? Lang::Strings::SPEAKING : Lang::Strings::STANDBY);
+            }
         });
     };
     audio_service_.SetCallbacks(callbacks);
