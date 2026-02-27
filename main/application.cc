@@ -73,6 +73,9 @@ void Application::Initialize() {
     auto display = board.GetDisplay();
     display->SetupUI();
 
+    // Set initial emotion to neutral (idle state)
+    display->SetEmotion("neutral");
+
     // Print board name/version info (will be cleared later in WiFiConfiguring state)
     display->SetChatMessage("system", SystemInfo::GetUserAgent().c_str());
 
@@ -119,8 +122,17 @@ void Application::Initialize() {
         xEventGroupSetBits(event_group_, MAIN_EVENT_VAD_CHANGE);
     };
     callbacks.on_command_listening_change = [this](bool listening) {
-        ESP_LOGI("Application", "Command listening change: listening=%d (offline mode - no display updates)", listening);
-        // Skip all display updates for offline mode to prevent SPI queue overflow
+        ESP_LOGI("Application", "Command listening change: listening=%d", listening);
+
+        // Change emote expression for visual feedback
+        Schedule([listening]() {
+            auto& board = Board::GetInstance();
+            auto display = board.GetDisplay();
+            if (display) {
+                // Listening → happy expression, Idle → neutral expression
+                display->SetEmotion(listening ? "happy" : "neutral");
+            }
+        });
     };
     callbacks.on_playback_change = [this](bool playing) {
         ESP_LOGI("Application", "Playback change: playing=%d", playing);

@@ -1,5 +1,5 @@
 [
-    {"emote": "happy",       "src": "winking.eaf",     "loop": true,  "fps": 30},
+    {"emote": "happy",       "src": "Happy.eaf",     "loop": true,  "fps": 30},
     {"emote": "laughing",    "src": "Happy.eaf",     "loop": true,  "fps": 20},
     {"emote": "funny",       "src": "Happy.eaf",     "loop": true,  "fps": 20},
     {"emote": "loving",      "src": "Happy.eaf",     "loop": true,  "fps": 20},
@@ -18,5 +18,5 @@
     {"emote": "relaxed",     "src": "winking.eaf",     "loop": true,  "fps": 30},
     {"emote": "confused",    "src": "angry.eaf",  "loop": true,  "fps": 20},
     {"emote": "neutral",     "src": "winking.eaf",   "loop": false, "fps": 30},
-    {"emote": "idle",        "src": "winking.eaf",   "loop": false, "fps":320}
+    {"emote": "idle",        "src": "winking.eaf",   "loop": false, "fps": 30}
 ]
