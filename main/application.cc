@@ -14,7 +14,12 @@
 #include <cstring>
 #include <esp_log.h>
 #include <cJSON.h>
+#include "settings.h"
+#include "system_info.h"
+#include "websocket_protocol.h"
+
 #include <driver/gpio.h>
+#include <esp_log.h>
 #include <arpa/inet.h>
 #include <font_awesome.h>
 
@@ -114,31 +119,29 @@ void Application::Initialize() {
     };
     callbacks.on_command_listening_change = [this](bool listening) {
         ESP_LOGI("Application", "Command listening change: listening=%d", listening);
+        Schedule([listening]() {
         auto& board = Board::GetInstance();
         auto display = board.GetDisplay();
         if (display) {
+            display->ShowMicIcon(listening);
             if (listening) {
-                // Change to neutral expression when listening for command
-                display->SetEmotion("neutral");
-            } else {
-                // Return to happy expression when done listening
-                display->SetEmotion("happy");
+                display->ShowSpeakerIcon(false);
             }
         }
+        });
     };
     callbacks.on_playback_change = [this](bool playing) {
         ESP_LOGI("Application", "Playback change: playing=%d", playing);
+        Schedule([playing]() {
         auto& board = Board::GetInstance();
         auto display = board.GetDisplay();
         if (display) {
+            display->ShowSpeakerIcon(playing);
             if (playing) {
-                // Change to happy expression when speaking/playing
-                display->SetEmotion("happy");
-            } else {
-                // Return to neutral expression when playback stopped
-                display->SetEmotion("neutral");
+                display->ShowMicIcon(false);
             }
         }
+        });
     };
     audio_service_.SetCallbacks(callbacks);
 
@@ -158,7 +161,7 @@ void Application::Initialize() {
     // Set network event callback for UI updates and network state handling
     board.SetNetworkEventCallback([this](NetworkEvent event, const std::string& data) {
         auto display = Board::GetInstance().GetDisplay();
-        
+
         switch (event) {
             case NetworkEvent::Scanning:
                 display->ShowNotification(Lang::Strings::SCANNING_WIFI, 30000);
@@ -409,7 +412,7 @@ void Application::CheckAssetsVersion() {
         ESP_LOGW(TAG, "Assets partition is disabled for board %s", BOARD_NAME);
         return;
     }
-    
+
     Settings settings("assets", true);
     // Check if there is a new assets need to be downloaded
     std::string download_url = settings.GetString("download_url");
@@ -420,7 +423,7 @@ void Application::CheckAssetsVersion() {
         char message[256];
         snprintf(message, sizeof(message), Lang::Strings::FOUND_NEW_ASSETS, download_url.c_str());
         Alert(Lang::Strings::LOADING_ASSETS, message, "cloud_arrow_down", Lang::Sounds::OGG_UPGRADE);
-        
+
         // Wait for the audio service to be idle for 3 seconds
         vTaskDelay(pdMS_TO_TICKS(3000));
         SetDeviceState(kDeviceStateUpgrading);
@@ -553,7 +556,7 @@ void Application::InitializeProtocol() {
         last_error_message_ = message;
         xEventGroupSetBits(event_group_, MAIN_EVENT_ERROR);
     });
-    
+
     protocol_->OnIncomingAudio([this](std::unique_ptr<AudioStreamPacket> packet) {
         auto state = GetDeviceState();
         ESP_LOGI(TAG, "Received audio packet: size=%u, current_state=%d (2=Listening, 3=Speaking)",
@@ -569,7 +572,7 @@ void Application::InitializeProtocol() {
             ESP_LOGW(TAG, "Dropping audio packet - not in Speaking state and not realtime mode");
         }
     });
-    
+
     protocol_->OnAudioChannelOpened([this, codec, &board]() {
         board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
         if (protocol_->server_sample_rate() != codec->output_sample_rate()) {
@@ -577,7 +580,7 @@ void Application::InitializeProtocol() {
                 protocol_->server_sample_rate(), codec->output_sample_rate());
         }
     });
-    
+
     protocol_->OnAudioChannelClosed([this, &board]() {
         board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
         Schedule([this]() {
@@ -586,7 +589,7 @@ void Application::InitializeProtocol() {
             SetDeviceState(kDeviceStateIdle);
         });
     });
-    
+
     protocol_->OnIncomingJson([this, display](const cJSON* root) {
         // Parse JSON data
         auto type = cJSON_GetObjectItem(root, "type");
@@ -674,7 +677,7 @@ void Application::InitializeProtocol() {
             ESP_LOGW(TAG, "Unknown message type: %s", type->valuestring);
         }
     });
-    
+
     protocol_->Start();
 }
 
@@ -742,7 +745,7 @@ void Application::StopListening() {
 
 void Application::HandleToggleChatEvent() {
     auto state = GetDeviceState();
-    
+
     if (state == kDeviceStateActivating) {
         SetDeviceState(kDeviceStateIdle);
         return;
@@ -796,7 +799,7 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
 
 void Application::HandleStartListeningEvent() {
     auto state = GetDeviceState();
-    
+
     if (state == kDeviceStateActivating) {
         SetDeviceState(kDeviceStateIdle);
         return;
@@ -810,7 +813,7 @@ void Application::HandleStartListeningEvent() {
         ESP_LOGE(TAG, "Protocol not initialized");
         return;
     }
-    
+
     if (state == kDeviceStateIdle) {
         if (!protocol_->IsAudioChannelOpened()) {
             SetDeviceState(kDeviceStateConnecting);
@@ -829,7 +832,7 @@ void Application::HandleStartListeningEvent() {
 
 void Application::HandleStopListeningEvent() {
     auto state = GetDeviceState();
-    
+
     if (state == kDeviceStateAudioTesting) {
         audio_service_.EnableAudioTesting(false);
         SetDeviceState(kDeviceStateWifiConfiguring);
@@ -929,7 +932,7 @@ void Application::HandleStateChangedEvent() {
     auto display = board.GetDisplay();
     auto led = board.GetLed();
     led->OnStateChanged();
-    
+
     switch (new_state) {
         case kDeviceStateUnknown:
         case kDeviceStateIdle:
@@ -977,7 +980,7 @@ void Application::HandleStateChangedEvent() {
             // Disable wake word detection in listening mode
             audio_service_.EnableWakeWordDetection(false);
 #endif
-            
+
             // Play popup sound after ResetDecoder (in EnableVoiceProcessing) has been called
             if (play_popup_on_listening_) {
                 play_popup_on_listening_ = false;
@@ -1003,7 +1006,7 @@ void Application::HandleStateChangedEvent() {
             // Enable offline mode for screen-tap triggered offline commands (BlueFi + offline commands in parallel)
             // In offline mode: AFE will start only when user taps screen to listen for commands
             // In online mode: AFE runs continuously for audio processing (no wake word, just audio to server)
-
+            
             // Set display first
             display->SetChatMessage("system", "");  // Clear the init message
             display->SetStatus(Lang::Strings::STANDBY);
@@ -1152,7 +1155,7 @@ void Application::WakeWordInvoke(const std::string& wake_word) {
     }
 
     auto state = GetDeviceState();
-    
+
     if (state == kDeviceStateIdle) {
         audio_service_.EncodeWakeWord();
 
@@ -1246,4 +1249,3 @@ void Application::ResetProtocol() {
         protocol_.reset();
     });
 }
-

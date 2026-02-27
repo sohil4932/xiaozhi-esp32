@@ -322,6 +322,15 @@ void AudioService::AudioOutputTask() {
         last_output_time_ = std::chrono::steady_clock::now();
         debug_statistics_.playback_count++;
 
+        bool playback_finished = false;
+        lock.lock();
+        playback_finished = audio_decode_queue_.empty() && audio_playback_queue_.empty();
+        lock.unlock();
+        if (local_playback_active_.load() && playback_finished && callbacks_.on_playback_change) {
+            local_playback_active_.store(false);
+            callbacks_.on_playback_change(false);
+        }
+
 #if CONFIG_USE_SERVER_AEC
         /* Record the timestamp for server AEC */
         if (task->timestamp > 0) {
@@ -688,6 +697,8 @@ void AudioService::SetCallbacks(AudioServiceCallbacks& callbacks) {
 }
 
 void AudioService::PlaySound(const std::string_view& ogg) {
+    local_playback_active_.store(true);
+
     // Notify that playback is starting
     if (callbacks_.on_playback_change) {
         callbacks_.on_playback_change(true);
@@ -917,6 +928,7 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
                         ESP_LOGI("AudioService", "Setting abort flag (cleared=%d, output_enabled=%d)",
                                  cleared_count, output_was_enabled);
                         abort_playback_.store(true);
+                        local_playback_active_.store(false);
 
                         // Notify that playback stopped
                         if (callbacks_.on_playback_change) {

@@ -136,7 +136,7 @@ def build_assets(text_font, resolution_name, emoji_collection, wakenet_model=Non
     
     # Prepare display info
     display_info = f"{resolution_name}_{text_font}_{emoji_collection}_{wakenet_model}"
-    print(f"{Colors.GREEN}Building: {display_info}{Colors.ENDC}")
+    print(f"Building: {display_info}")
     # print(f"Command: {' '.join(cmd)}")
     
     try:
@@ -156,17 +156,17 @@ def build_assets(text_font, resolution_name, emoji_collection, wakenet_model=Non
         if os.path.exists(src_path):
             shutil.copy2(src_path, dst_path)
             abs_dst_path = os.path.abspath(dst_path)
-            print(f"{Colors.GREEN}✓ Generated: {abs_dst_path}{Colors.ENDC}")
+            print(f"[OK] Generated: {abs_dst_path}")
             return True
         else:
-            print(f"{Colors.RED}✗ Error: generated assets.bin not found{Colors.ENDC}")
+            print("[ERROR] generated assets.bin not found")
             return False
             
     except subprocess.CalledProcessError as e:
         print(f"{Colors.RED}✗ Build failed: {e}{Colors.ENDC}")
         return False
     except Exception as e:
-        print(f"{Colors.RED}✗ Unknown error: {e}{Colors.ENDC}")
+        print(f"[ERROR] Unknown error: {e}")
         return False
 
 
@@ -264,7 +264,7 @@ def main():
         if build_assets(text_font, resolution_name, emoji_collection, wakenet_model, build_dir, final_dir, output_filename, args.name_length, external_base):
             successful_builds += 1
     
-    print(f"{Colors.GREEN}Completed! Builds: {successful_builds}/{total_combinations}{Colors.ENDC}")
+    print(f"Completed! Builds: {successful_builds}/{total_combinations}")
 
 
 if __name__ == "__main__":
