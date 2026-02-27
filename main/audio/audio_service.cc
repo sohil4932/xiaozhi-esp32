@@ -357,6 +357,15 @@ void AudioService::OpusCodecTask() {
 
         /* Decode the audio from decode queue */
         if (!audio_decode_queue_.empty() && audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE) {
+            // Check if playback was aborted (e.g., user tapped during playback)
+            // If so, discard packets instead of decoding to prevent playing stale audio
+            if (abort_playback_.load()) {
+                audio_decode_queue_.pop_front();
+                audio_queue_cv_.notify_all();
+                lock.unlock();
+                continue;
+            }
+
             auto packet = std::move(audio_decode_queue_.front());
             audio_decode_queue_.pop_front();
             audio_queue_cv_.notify_all();
@@ -860,23 +869,27 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
 
                             const char* folder = nullptr;
                             switch (msg.cmd_id) {
-                                case 0:
+                                case 1:
                                     // "tell me joke"
                                     folder = "/sdcard/jokes";
                                     break;
-                                case 1:
+                                case 2:
                                     // "tell me story"
                                     folder = "/sdcard/stories";
                                     break;
-                                case 2:
+                                case 3:
                                     // "good night"
                                     folder = "/sdcard/goodnight";
                                     break;
-                                case 3:
+                                case 4:
                                     // "make me laugh"
                                     folder = "/sdcard/jokes";
                                     break;
-                                case 4:
+                                case 5:
+                                    // "sing a song"
+                                    folder = "/sdcard/songs";
+                                    break;
+                                case 6:
                                     // "sing a song"
                                     folder = "/sdcard/songs";
                                     break;

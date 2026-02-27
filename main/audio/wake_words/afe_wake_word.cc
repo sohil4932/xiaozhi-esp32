@@ -258,7 +258,7 @@ void AfeWakeWord::AudioDetectionTask() {
                         command_detected_callback_(mn_result->command_id[0], std::string(mn_result->string));
                     }
 
-                    ESP_LOGI(TAG, "Command handled, MultiNet unloaded");
+                    ESP_LOGI(TAG, "Command handled, MultiNet kept loaded for next command");
                 }
 
                 if (mn_state == ESP_MN_STATE_TIMEOUT) {
@@ -346,12 +346,18 @@ void AfeWakeWord::StopCommandListening() {
         command_listening_change_callback_(false);
     }
 
-    // Unload MultiNet to free SRAM/PSRAM
+    // Keep MultiNet loaded to prevent display freezing during reload
+    // MultiNet7 initialization takes ~600ms which causes UI freeze and SPI errors
+    // Trade-off: Uses ~100KB SRAM but eliminates the freeze on every tap
+    // Memory usage: MultiNet7 model data stays in PSRAM, runtime ~100KB in SRAM
     if (multinet_model_ != nullptr && multinet_iface_ != nullptr) {
-        multinet_iface_->destroy(multinet_model_);
-        multinet_model_ = nullptr;
-        ESP_LOGI(TAG, "MultiNet unloaded, memory freed for display");
+        ESP_LOGI(TAG, "MultiNet kept loaded (prevents UI freeze on next tap)");
     }
+
+    // Original code (now disabled to prevent freeze):
+    // multinet_iface_->destroy(multinet_model_);
+    // multinet_model_ = nullptr;
+    // ESP_LOGI(TAG, "MultiNet unloaded, memory freed for display");
 }
 
 void AfeWakeWord::EncodeWakeWordData() {
