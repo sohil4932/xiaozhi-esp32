@@ -130,7 +130,7 @@ void Application::Initialize() {
             auto display = board.GetDisplay();
             if (display) {
                 // Listening → happy expression, Idle → neutral expression
-                display->SetEmotion(listening ? "happy" : "neutral");
+                display->SetEmotion(listening ? "listen" : "neutral");
             }
         });
     };
