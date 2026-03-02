@@ -187,6 +187,7 @@ private:
     std::atomic<bool> abort_playback_{false};
     std::atomic<bool> command_listening_active_{false};
     std::atomic<bool> local_playback_active_{false};
+    std::atomic<bool> command_trigger_in_progress_{false};
 
     esp_timer_handle_t audio_power_timer_ = nullptr;
     std::chrono::steady_clock::time_point last_input_time_;

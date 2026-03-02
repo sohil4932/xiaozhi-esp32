@@ -17,6 +17,12 @@ AfeWakeWord::AfeWakeWord()
 }
 
 AfeWakeWord::~AfeWakeWord() {
+    if (multinet_preload_task_ != nullptr) {
+        vTaskDelete(multinet_preload_task_);
+        multinet_preload_task_ = nullptr;
+        multinet_preloading_.store(false);
+    }
+
     // Cleanup MultiNet
     if (multinet_model_ != nullptr && multinet_iface_ != nullptr) {
         multinet_iface_->destroy(multinet_model_);
@@ -79,9 +85,9 @@ bool AfeWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) {
         input_format.push_back('R');
     }
 
-    // In both offline and online modes, use AFE without wake word
-    // Offline: MultiNet loaded on-demand via screen tap
-    // Online: Server handles all voice recognition, no wake word or MultiNet needed
+    // In both offline and online modes, use AFE without wake word.
+    // Offline command model (MultiNet) is preloaded separately in background.
+    // Online mode does not require local MultiNet.
     ESP_LOGI(TAG, "%s mode: Initializing AFE without wake word",
              offline_mode_enabled_ ? "Offline" : "Online");
 
@@ -95,9 +101,9 @@ bool AfeWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) {
     afe_iface_ = esp_afe_handle_from_config(afe_config);
     afe_data_ = afe_iface_->create_from_config(afe_config);
 
-    // Don't initialize MultiNet - in offline mode it's loaded on-demand, in online mode not needed
+    // MultiNet is not loaded in Initialize(); it is preloaded asynchronously later.
     ESP_LOGI(TAG, "MultiNet not initialized - %s",
-             offline_mode_enabled_ ? "will load on screen tap" : "not needed in online mode");
+             offline_mode_enabled_ ? "will preload in background" : "not needed in online mode");
 
     xTaskCreate([](void* arg) {
         auto this_ = (AfeWakeWord*)arg;
@@ -164,6 +170,64 @@ void AfeWakeWord::InitializeMultiNet() {
     multinet_iface_->print_active_speech_commands(multinet_model_);
 
     ESP_LOGI(TAG, "MultiNet initialized successfully");
+}
+
+void AfeWakeWord::PreloadCommandModel(uint32_t delay_ms) {
+    if (!offline_mode_enabled_) {
+        ESP_LOGD(TAG, "Skip MultiNet preload: offline mode disabled");
+        return;
+    }
+
+    if (multinet_model_ != nullptr) {
+        ESP_LOGD(TAG, "Skip MultiNet preload: model already loaded");
+        return;
+    }
+
+    bool expected = false;
+    if (!multinet_preloading_.compare_exchange_strong(expected, true)) {
+        ESP_LOGD(TAG, "Skip MultiNet preload: preload already in progress");
+        return;
+    }
+
+    multinet_preload_delay_ms_ = delay_ms;
+    auto preload_task = [](void* arg) {
+        auto* this_ = static_cast<AfeWakeWord*>(arg);
+        uint32_t delay = this_->multinet_preload_delay_ms_;
+        if (delay > 0) {
+            vTaskDelay(pdMS_TO_TICKS(delay));
+        }
+
+        if (!this_->offline_mode_enabled_) {
+            ESP_LOGI(TAG, "MultiNet preload cancelled: offline mode disabled");
+        } else if (this_->multinet_model_ == nullptr) {
+            ESP_LOGI(TAG, "Preloading MultiNet model in background...");
+            this_->InitializeMultiNet();
+        }
+
+        if (this_->multinet_model_ != nullptr) {
+            ESP_LOGI(TAG, "MultiNet preload completed");
+        } else {
+            ESP_LOGW(TAG, "MultiNet preload finished without a valid model");
+        }
+
+        this_->multinet_preloading_.store(false);
+        this_->multinet_preload_task_ = nullptr;
+        vTaskDelete(NULL);
+    };
+
+    BaseType_t created = pdFAIL;
+#if CONFIG_FREERTOS_UNICORE
+    created = xTaskCreate(preload_task, "mn_preload", 4096, this, 0, &multinet_preload_task_);
+#else
+    // Pin preload to CPU0 to reduce contention with touch/display tasks typically on CPU1.
+    created = xTaskCreatePinnedToCore(preload_task, "mn_preload", 4096, this, 0, &multinet_preload_task_, 0);
+#endif
+
+    if (created != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create MultiNet preload task");
+        multinet_preloading_.store(false);
+        multinet_preload_task_ = nullptr;
+    }
 }
 
 void AfeWakeWord::Feed(const std::vector<int16_t>& data) {
@@ -262,10 +326,10 @@ void AfeWakeWord::AudioDetectionTask() {
                 }
 
                 if (mn_state == ESP_MN_STATE_TIMEOUT) {
-                    // Timeout - no command detected, unload MultiNet
+                    // Timeout - no command detected
                     ESP_LOGW(TAG, "Command detection timeout");
                     cmd_frame_count = 0;  // Reset frame counter
-                    StopCommandListening();  // This unloads MultiNet and frees memory
+                    StopCommandListening();  // MultiNet remains loaded for fast next trigger
                 }
             }
             // If not in command mode, just continue fetching without processing
@@ -297,8 +361,7 @@ void AfeWakeWord::TriggerCommandListening() {
         return;
     }
 
-    // Notify callback FIRST - AudioService will stop playback before we load MultiNet
-    // This prevents the playback task from starting new audio during MultiNet loading
+    // Notify callback FIRST - AudioService will stop playback before command mode starts.
     ESP_LOGI(TAG, "Invoking command listening callback (true)");
     if (command_listening_change_callback_) {
         command_listening_change_callback_(true);
@@ -307,10 +370,21 @@ void AfeWakeWord::TriggerCommandListening() {
     // Give AudioService time to stop playback
     vTaskDelay(pdMS_TO_TICKS(50));
 
-    // Load MultiNet on-demand
+    // Try to use preloaded MultiNet first; wait briefly if preload is still running.
     ESP_LOGI(TAG, "Checking MultiNet model, multinet_model_: %p", multinet_model_);
+    if (multinet_model_ == nullptr && multinet_preloading_.load()) {
+        ESP_LOGI(TAG, "MultiNet preload in progress, waiting...");
+        const TickType_t step = pdMS_TO_TICKS(20);
+        const TickType_t timeout = pdMS_TO_TICKS(1200);
+        TickType_t waited = 0;
+        while (multinet_model_ == nullptr && multinet_preloading_.load() && waited < timeout) {
+            vTaskDelay(step);
+            waited += step;
+        }
+    }
+
     if (multinet_model_ == nullptr) {
-        ESP_LOGI(TAG, "Loading MultiNet for command recognition...");
+        ESP_LOGW(TAG, "MultiNet not preloaded in time, loading synchronously");
         InitializeMultiNet();
         if (multinet_model_ == nullptr) {
             ESP_LOGE(TAG, "Failed to load MultiNet");
@@ -334,7 +408,7 @@ void AfeWakeWord::StopCommandListening() {
         return;
     }
 
-    ESP_LOGI(TAG, "Stopping command listening and unloading MultiNet to free memory");
+    ESP_LOGI(TAG, "Stopping command listening");
     command_mode_active_ = false;
 
     // Don't stop AFE task - keep it running for next screen tap

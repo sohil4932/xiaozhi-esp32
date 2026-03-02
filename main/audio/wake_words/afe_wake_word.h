@@ -17,6 +17,7 @@
 #include <functional>
 #include <mutex>
 #include <condition_variable>
+#include <atomic>
 
 #include "audio_codec.h"
 #include "wake_word.h"
@@ -35,8 +36,10 @@ public:
     void Stop();
     void SetOfflineModeEnabled(bool enabled) { offline_mode_enabled_ = enabled; }
     bool IsOfflineModeEnabled() const { return offline_mode_enabled_; }
-    void TriggerCommandListening();  // Manually trigger command listening mode (loads MultiNet)
-    void StopCommandListening();  // Stop command listening and unload MultiNet to free memory
+    void TriggerCommandListening();  // Manually trigger command listening mode
+    void StopCommandListening();  // Stop command listening (keeps MultiNet loaded)
+    void PreloadCommandModel(uint32_t delay_ms = 0);  // Load MultiNet once in background
+   
     size_t GetFeedSize();
     void EncodeWakeWordData();
     bool GetWakeWordOpus(std::vector<uint8_t>& opus);
@@ -62,6 +65,9 @@ private:
     std::function<void(bool listening)> command_listening_change_callback_;
     bool command_mode_active_ = false;
     bool offline_mode_enabled_ = false;  // When true, offline commands work continuously without stopping
+    std::atomic<bool> multinet_preloading_{false};
+    TaskHandle_t multinet_preload_task_ = nullptr;
+    uint32_t multinet_preload_delay_ms_ = 0;
 
     TaskHandle_t wake_word_encode_task_ = nullptr;
     StaticTask_t* wake_word_encode_task_buffer_ = nullptr;

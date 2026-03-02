@@ -327,6 +327,9 @@ void AudioService::AudioOutputTask() {
         playback_finished = audio_decode_queue_.empty() && audio_playback_queue_.empty();
         lock.unlock();
         if (local_playback_active_.load() && playback_finished && callbacks_.on_playback_change) {
+            auto& board = Board::GetInstance();
+            auto display = board.GetDisplay();
+            display->SetEmotion("neutral");
             local_playback_active_.store(false);
             callbacks_.on_playback_change(false);
         }
@@ -615,6 +618,12 @@ void AudioService::EnableWakeWordDetection(bool enable) {
         }
         wake_word_->Start();
         xEventGroupSetBits(event_group_, AS_EVENT_WAKE_WORD_RUNNING);
+
+        auto afe_wake_word = dynamic_cast<AfeWakeWord*>(wake_word_.get());
+        if (afe_wake_word != nullptr && afe_wake_word->IsOfflineModeEnabled()) {
+            // Delay preload a bit to avoid competing with immediate UI work after state transition.
+            afe_wake_word->PreloadCommandModel(1500);
+        }
     } else {
         wake_word_->Stop();
         xEventGroupClearBits(event_group_, AS_EVENT_WAKE_WORD_RUNNING);
@@ -681,6 +690,10 @@ void AudioService::SetOfflineModeEnabled(bool enabled) {
     auto afe_wake_word = dynamic_cast<AfeWakeWord*>(wake_word_.get());
     if (afe_wake_word != nullptr) {
         afe_wake_word->SetOfflineModeEnabled(enabled);
+        if (enabled && wake_word_initialized_) {
+            // Delay preload a bit to avoid immediate post-touch UI stutter.
+            afe_wake_word->PreloadCommandModel(1500);
+        }
     }
 }
 
@@ -693,11 +706,41 @@ bool AudioService::IsOfflineModeEnabled() const {
 }
 
 void AudioService::TriggerCommandListening() {
-    auto afe_wake_word = dynamic_cast<AfeWakeWord*>(wake_word_.get());
-    if (afe_wake_word != nullptr) {
-        afe_wake_word->TriggerCommandListening();
-    } else {
+    if (command_trigger_in_progress_.exchange(true)) {
+        ESP_LOGW(TAG, "Command trigger already in progress");
+        return;
+    }
+
+    if (dynamic_cast<AfeWakeWord*>(wake_word_.get()) == nullptr) {
+        command_trigger_in_progress_.store(false);
         ESP_LOGW(TAG, "Cannot trigger command listening - not using AFE wake word");
+        return;
+    }
+
+    auto trigger_task = [](void* arg) {
+        auto* self = static_cast<AudioService*>(arg);
+        auto* afe_wake_word = dynamic_cast<AfeWakeWord*>(self->wake_word_.get());
+        if (afe_wake_word != nullptr) {
+            // Command detection needs wake-word pipeline task running.
+            if (!self->IsWakeWordRunning()) {
+                ESP_LOGW(TAG, "Wake word detection not running, enabling before command listening");
+                self->EnableWakeWordDetection(true);
+            }
+            afe_wake_word->TriggerCommandListening();
+        }
+        self->command_trigger_in_progress_.store(false);
+        vTaskDelete(NULL);
+    };
+
+#if CONFIG_FREERTOS_UNICORE
+    BaseType_t ret = xTaskCreate(trigger_task, "cmd_trigger", 4096, this, 3, nullptr);
+#else
+    // Pin to CPU0 to avoid blocking/contending with touch task on CPU1.
+    BaseType_t ret = xTaskCreatePinnedToCore(trigger_task, "cmd_trigger", 4096, this, 3, nullptr, 0);
+#endif
+    if (ret != pdPASS) {
+        command_trigger_in_progress_.store(false);
+        ESP_LOGE(TAG, "Failed to create command trigger task");
     }
 }
 
@@ -891,7 +934,7 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
                                     break;
                                 case 6:
                                     // "sing a song"
-                                    folder = "/sdcard/songs";
+                                    folder = "/sdcard/stories";
                                     break;
                             }
 
@@ -906,6 +949,37 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
 
             afe_wake_word->OnCommandDetected([this, &audio_player](int command_id, const std::string& command_string) {
                 ESP_LOGI("AudioService", "Offline command detected! ID: %d", command_id);
+
+                    auto& board = Board::GetInstance();
+                    auto display = board.GetDisplay();
+
+                // Change emotion based on detected command id 
+                switch (command_id) {
+                    case 1: // tell me joke
+                        display->SetEmotion("funny");
+                        break;
+
+                    case 2: // tell me story
+                        display->SetEmotion("relaxed");
+                        break;
+
+                    case 3: // good night
+                        display->SetEmotion("sleepy");
+                        break;
+
+                    case 4: // make me laugh
+                        display->SetEmotion("laughing");
+                        break;
+
+                    case 5: // sing a song
+                    case 6: // sing a song (variant)
+                        display->SetEmotion("happy");
+                        break;
+
+                    default:
+                        display->SetEmotion("neutral");
+                        break;
+                }
 
                 // Send to playback task
                 playback_msg msg = {&audio_player, command_id};

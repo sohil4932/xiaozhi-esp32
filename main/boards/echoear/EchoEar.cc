@@ -473,16 +473,21 @@ private:
         while (true) {
             if (touchpad->WaitForTouchEvent()) {
                 auto &app = Application::GetInstance();
-                auto &board = (EchoEar &)Board::GetInstance();
 
                 ESP_LOGD(TAG, "Touch event, TP_PIN_NUM_INT: %d", gpio_get_level(TP_PIN_NUM_INT));
                 touchpad->UpdateTouchPoint();
                 auto touch_event = touchpad->CheckTouchEvent();
 
                 if (touch_event == Cst816s::TOUCH_RELEASE) {
-                    if (app.GetDeviceState() == kDeviceStateStarting) {
-                        board.EnterWifiConfigMode();
-                    } else {
+                    app.Schedule([]() {
+                        auto& app = Application::GetInstance();
+                        auto state = app.GetDeviceState();
+                        if (state == kDeviceStateStarting) {
+                            auto& board = static_cast<EchoEar&>(Board::GetInstance());
+                            board.EnterWifiConfigMode();
+                            return;
+                        }
+
                         auto& audio = app.GetAudioService();
                         if (audio.IsOfflineModeEnabled()) {
                             // In offline mode, trigger command listening on touch
@@ -492,7 +497,7 @@ private:
                             // In online mode, toggle chat state
                             app.ToggleChatState();
                         }
-                    }
+                    });
                 }
             }
         }
