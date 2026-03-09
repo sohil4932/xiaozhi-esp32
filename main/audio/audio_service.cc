@@ -3,6 +3,7 @@
 #include "../offline/sd_card_manager.h"
 #include "../boards/common/board.h"
 #include "../display/display.h"
+#include "assets/lang_config.h"
 #include <esp_log.h>
 #include <cstring>
 
@@ -932,10 +933,6 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
                                     // "sing a song"
                                     folder = "/sdcard/songs";
                                     break;
-                                case 6:
-                                    // "sing a song"
-                                    folder = "/sdcard/stories";
-                                    break;
                             }
 
                             if (folder) {
@@ -952,6 +949,23 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
 
                     auto& board = Board::GetInstance();
                     auto display = board.GetDisplay();
+
+                if (command_id == 6 || command_id == 7) {
+                    if (command_id == 6) {
+                        codec_->IncreaseVolume(10);
+                    } else {
+                        codec_->DecreaseVolume(10);
+                    }
+
+                    const int volume = codec_->output_volume();
+                    ESP_LOGI("AudioService", "Volume command handled, new volume=%d", volume);
+                    if (display) {
+                        std::string notification = std::string(Lang::Strings::VOLUME) + std::to_string(volume);
+                        display->ShowNotification(notification.c_str());
+                        display->SetEmotion(command_id == 6 ? "happy" : "relaxed");
+                    }
+                    return;
+                }
 
                 // Change emotion based on detected command id 
                 switch (command_id) {
@@ -972,7 +986,6 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
                         break;
 
                     case 5: // sing a song
-                    case 6: // sing a song (variant)
                         display->SetEmotion("happy");
                         break;
 
