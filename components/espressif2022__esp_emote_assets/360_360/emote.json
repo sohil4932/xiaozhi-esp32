@@ -18,5 +18,5 @@
     {"emote": "relaxed",     "src": "shocked.eaf",     "loop": true,  "fps": 8},
     {"emote": "confused",    "src": "shocked.eaf",  "loop": true,  "fps": 8},
     {"emote": "neutral",     "src": "natural.eaf",   "loop": false, "fps": 8},
-    {"emote": "listen",        "src": "listen.eaf",   "loop": false, "fps": 8}
+    {"emote": "ideal",      "src": "listen_eye.eaf",   "loop": false, "fps": 8}
 ]
