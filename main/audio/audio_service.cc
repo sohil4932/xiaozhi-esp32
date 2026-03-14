@@ -1,8 +1,10 @@
 #include "audio_service.h"
 #include "../offline/simple_audio_player.h"
 #include "../offline/sd_card_manager.h"
+#include "../application.h"
 #include "../boards/common/board.h"
 #include "../display/display.h"
+
 #include "assets/lang_config.h"
 #include <esp_log.h>
 #include <cstring>
@@ -740,12 +742,21 @@ void AudioService::TriggerCommandListening() {
     BaseType_t ret = xTaskCreatePinnedToCore(trigger_task, "cmd_trigger", 4096, this, 3, nullptr, 0);
 #endif
     if (ret != pdPASS) {
+        ESP_LOGW(TAG, "Failed to create command trigger task, running inline");
+        auto* afe_wake_word = dynamic_cast<AfeWakeWord*>(wake_word_.get());
+        if (afe_wake_word != nullptr) {
+            // Command detection needs wake-word pipeline task running.
+            if (!IsWakeWordRunning()) {
+                ESP_LOGW(TAG, "Wake word detection not running, enabling before command listening");
+                EnableWakeWordDetection(true);
+            }
+            afe_wake_word->TriggerCommandListening();
+        }
         command_trigger_in_progress_.store(false);
-        ESP_LOGE(TAG, "Failed to create command trigger task");
     }
 }
 
-void AudioService::SetCallbacks(AudioServiceCallbacks& callbacks) {
+void AudioService::SetCallbacks(AudioServiceCallbacks& callbacks) { 
     callbacks_ = callbacks;
 }
 
@@ -912,6 +923,7 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
                             }
 
                             const char* folder = nullptr;
+                            bool play_next = false;
                             switch (msg.cmd_id) {
                                 case 1:
                                     // "tell me joke"
@@ -933,11 +945,20 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
                                     // "sing a song"
                                     folder = "/sdcard/songs";
                                     break;
+                                case 8:
+                                    // "next"
+                                    play_next = true;
+                                    break;
                             }
-
-                            if (folder) {
+                            if (play_next) {
+                                ESP_LOGI("AudioService", "Playing next from last folder");
+                                msg.player->PlayNextInLastFolder();
+                            } else if (folder) {
                                 ESP_LOGI("AudioService", "Playing from %s", folder);
                                 msg.player->PlayRandomFromFolder(folder);
+                            } else {
+                                ESP_LOGW("AudioService",
+                                        "No playback action for command id: %d", msg.cmd_id);
                             }
                         }
                     }
@@ -946,9 +967,7 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
 
             afe_wake_word->OnCommandDetected([this, &audio_player](int command_id, const std::string& command_string) {
                 ESP_LOGI("AudioService", "Offline command detected! ID: %d", command_id);
-
-                    auto& board = Board::GetInstance();
-                    auto display = board.GetDisplay();
+                auto& app = Application::GetInstance();
 
                 if (command_id == 6 || command_id == 7) {
                     if (command_id == 6) {
@@ -959,40 +978,56 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
 
                     const int volume = codec_->output_volume();
                     ESP_LOGI("AudioService", "Volume command handled, new volume=%d", volume);
-                    if (display) {
-                        std::string notification = std::string(Lang::Strings::VOLUME) + std::to_string(volume);
-                        display->ShowNotification(notification.c_str());
-                        display->SetEmotion(command_id == 6 ? "happy" : "relaxed");
-                    }
+                    std::string notification =
+                        std::string(Lang::Strings::VOLUME) + std::to_string(volume);
+                    const char* emotion = command_id == 6 ? "happy" : "relaxed";
+                    app.Schedule([notification = std::move(notification), emotion]() {
+                        auto display = Board::GetInstance().GetDisplay();
+                        if (display) {
+                            display->ShowNotification(notification.c_str());
+                            display->SetEmotion(emotion);
+                        }
+                    });
                     return;
                 }
 
-                // Change emotion based on detected command id 
+                // Change emotion based on detected command id
+                const char* emotion = "neutral";
                 switch (command_id) {
                     case 1: // tell me joke
-                        display->SetEmotion("funny");
+                        emotion = "funny";
                         break;
 
                     case 2: // tell me story
-                        display->SetEmotion("relaxed");
+                        emotion = "relaxed";
                         break;
 
                     case 3: // good night
-                        display->SetEmotion("sleepy");
+                        emotion = "sleepy";
                         break;
 
                     case 4: // make me laugh
-                        display->SetEmotion("laughing");
+                        emotion = "laughing";
                         break;
 
                     case 5: // sing a song
-                        display->SetEmotion("happy");
+                        emotion = "happy";
                         break;
 
+                    case 8: // next
+                        emotion = "neutral";
+                        break;
+                    
                     default:
-                        display->SetEmotion("neutral");
+                        emotion = "neutral";
                         break;
                 }
+                    app.Schedule([emotion]() {
+                        auto display = Board::GetInstance().GetDisplay();
+                        if (display) {
+                            display->SetEmotion(emotion);
+                        }
+                    });
 
                 // Send to playback task
                 playback_msg msg = {&audio_player, command_id};

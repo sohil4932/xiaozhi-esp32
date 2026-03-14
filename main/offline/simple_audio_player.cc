@@ -5,6 +5,7 @@
 #include <esp_heap_caps.h>
 #include <random>
 #include <algorithm>
+#include <vector>
 
 #define TAG "SimpleAudioPlayer"
 
@@ -33,13 +34,64 @@ esp_err_t SimpleAudioPlayer::PlayRandomFromFolder(const char* folder_path) {
         return ESP_ERR_INVALID_STATE;
     }
 
+    std::vector<std::string> ogg_files;
+    esp_err_t ret = LoadOggFiles(folder_path, ogg_files);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    // Pick random OGG
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> dist(0, ogg_files.size() - 1);
+    size_t idx = static_cast<size_t>(dist(gen));
+
+    ret = PlayFileByIndex(folder_path, ogg_files, idx);
+    if (ret == ESP_OK) {
+        last_folder_ = folder_path;
+        last_files_ = std::move(ogg_files);
+        last_index_ = static_cast<int>(idx);
+    }
+    return ret;
+}
+
+esp_err_t SimpleAudioPlayer::PlayNextInLastFolder() {
+    if (!audio_service_) {
+        ESP_LOGE(TAG, "Audio service not initialized");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (last_folder_.empty()) {
+        ESP_LOGW(TAG, "No previous folder, cannot play next");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    std::vector<std::string> ogg_files;
+    esp_err_t ret = LoadOggFiles(last_folder_.c_str(), ogg_files);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    size_t next_index = 0;
+    if (last_index_ >= 0 && static_cast<size_t>(last_index_) < ogg_files.size()) {
+        next_index = (static_cast<size_t>(last_index_) + 1) % ogg_files.size();
+    }
+
+    ret = PlayFileByIndex(last_folder_.c_str(), ogg_files, next_index);
+    if (ret == ESP_OK) {
+        last_files_ = std::move(ogg_files);
+        last_index_ = static_cast<int>(next_index);
+    }
+    return ret;
+}
+
+esp_err_t SimpleAudioPlayer::LoadOggFiles(const char* folder_path, std::vector<std::string>& ogg_files) {
     auto& sd = SDCardManager::GetInstance();
     if (!sd.IsMounted()) {
         ESP_LOGE(TAG, "SD card not mounted");
         return ESP_ERR_INVALID_STATE;
     }
 
-    // List files in folder
     std::vector<std::string> files;
     esp_err_t ret = sd.ListFiles(folder_path, files);
     if (ret != ESP_OK || files.empty()) {
@@ -47,8 +99,7 @@ esp_err_t SimpleAudioPlayer::PlayRandomFromFolder(const char* folder_path) {
         return ESP_FAIL;
     }
 
-    // Filter OGG files
-    std::vector<std::string> ogg_files;
+    ogg_files.clear();
     for (const auto& file : files) {
         if (file.find(".ogg") != std::string::npos || file.find(".OGG") != std::string::npos) {
             ogg_files.push_back(file);
@@ -60,19 +111,24 @@ esp_err_t SimpleAudioPlayer::PlayRandomFromFolder(const char* folder_path) {
         return ESP_FAIL;
     }
 
-    // Pick random OGG
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<> dist(0, ogg_files.size() - 1);
-    int idx = dist(gen);
+    std::sort(ogg_files.begin(), ogg_files.end());
+    return ESP_OK;
+}
 
-    std::string selected_file = ogg_files[idx];
-    ESP_LOGI(TAG, "Playing random OGG: %s (%d/%d)", selected_file.c_str(), idx + 1, (int)ogg_files.size());
+esp_err_t SimpleAudioPlayer::PlayFileByIndex(const char* folder_path, const std::vector<std::string>& ogg_files, size_t index) {
+    if (index >= ogg_files.size()) {
+        ESP_LOGE(TAG, "Invalid index %u for folder %s", static_cast<unsigned>(index), folder_path);
+        return ESP_ERR_INVALID_ARG;
+    }
 
-    // Read OGG file from SD card
+    const std::string& selected_file = ogg_files[index];
+    ESP_LOGI(TAG, "Playing OGG: %s (%u/%u)", selected_file.c_str(),
+             static_cast<unsigned>(index + 1), static_cast<unsigned>(ogg_files.size()));
+
     std::string full_path = std::string(folder_path) + "/" + selected_file;
     std::vector<uint8_t> ogg_data;
-    ret = sd.ReadFile(full_path.c_str(), ogg_data);
+    auto& sd = SDCardManager::GetInstance();
+    esp_err_t ret = sd.ReadFile(full_path.c_str(), ogg_data);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to read OGG file: %s", esp_err_to_name(ret));
         return ret;
@@ -80,10 +136,8 @@ esp_err_t SimpleAudioPlayer::PlayRandomFromFolder(const char* folder_path) {
 
     ESP_LOGI(TAG, "Read %zu bytes from SD card", ogg_data.size());
 
-    // Create string_view for PlaySound (it expects string_view for embedded OGG)
-    // We need to allocate persistent memory for the OGG data since AudioService
-    // will decode it asynchronously
-    static std::vector<uint8_t> playback_buffer;  // Static to keep alive during playback
+    // PlaySound expects a string_view; keep the buffer alive until decoding enqueues frames.
+    static std::vector<uint8_t> playback_buffer;
     playback_buffer = std::move(ogg_data);
 
     std::string_view ogg_view(reinterpret_cast<const char*>(playback_buffer.data()), playback_buffer.size());

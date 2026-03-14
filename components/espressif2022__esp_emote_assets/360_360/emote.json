@@ -17,6 +17,6 @@
     {"emote": "winking",     "src": "natural.eaf",   "loop": true,  "fps": 8},
     {"emote": "relaxed",     "src": "shocked.eaf",     "loop": true,  "fps": 8},
     {"emote": "confused",    "src": "shocked.eaf",  "loop": true,  "fps": 8},
-    {"emote": "neutral",     "src": "natural.eaf",   "loop": false, "fps": 8},
-    {"emote": "ideal",      "src": "listen_eye.eaf",   "loop": false, "fps": 8}
+    {"emote": "neutral",     "src": "natural.eaf",   "loop": true, "fps": 8},
+    {"emote": "ideal",      "src": "listen_eye.eaf",   "loop": true, "fps": 8}
 ]
