@@ -20,6 +20,11 @@
 #define SD_D0       GPIO_NUM_17
 // Note: EchoEar uses 1-line SDMMC mode (not 4-line)
 
+/* IMU GPIOs */
+#define IMU_INT_GPIO             GPIO_NUM_21
+
+#define I2C_MASTER_FREQ_HZ      (400 * 1000)
+
 #define AUDIO_I2S_GPIO_MCLK     GPIO_NUM_42
 #define AUDIO_I2S_GPIO_WS       GPIO_NUM_39
 #define AUDIO_I2S_GPIO_BCLK     GPIO_NUM_40

@@ -10,15 +10,20 @@
 #include "offline/sd_card_manager.h"
 
 #include <esp_log.h>
+#include <esp_timer.h>
 
 #include <driver/i2c_master.h>
-#include <driver/i2c.h>
+// #include <driver/i2c.h>
 #include "i2c_device.h"
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
 #include <esp_lcd_st77916.h>
 #include "esp_lcd_touch_cst816s.h"
 #include "touch.h"
+#ifdef IMU_INT_GPIO
+#include "bmi270_api.h"
+#include "i2c_bus.h"
+#endif  // IMU_INT_GPIO
 
 #include "driver/temperature_sensor.h"
 #include <sdmmc_cmd.h>
@@ -30,6 +35,110 @@
 
 #define TAG "EchoEar"
 
+
+#ifdef IMU_INT_GPIO
+namespace Bmi270Imu {
+
+static bmi270_handle_t bmi_handle_ = nullptr;
+
+esp_err_t Initialize(i2c_bus_handle_t i2c_bus, uint8_t addr = BMI270_I2C_ADDRESS) {
+    if (bmi_handle_) {
+        return ESP_OK;
+    }
+
+    if (!i2c_bus) {
+        ESP_LOGE(TAG, "Invalid I2C bus for BMI270");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    esp_err_t ret = bmi270_sensor_create(i2c_bus, &bmi_handle_, bmi270_toy_config_file, 0);
+    if (ret != ESP_OK || !bmi_handle_) {
+        ESP_LOGE(TAG, "BMI270 create failed: %s", esp_err_to_name(ret));
+        return ret == ESP_OK ? ESP_FAIL : ret;
+    }
+    ESP_LOGI(TAG, "BMI270 initialized (toy firmware)");
+    return ESP_OK;
+}
+
+esp_err_t EnableImuIntForMotion() {
+    if (!bmi_handle_) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    int8_t rslt;
+    uint8_t sens_list[2] = {BMI2_ACCEL, BMI2_GYRO};
+
+    rslt = bmi2_set_adv_power_save(BMI2_DISABLE, bmi_handle_);
+    if (rslt != BMI2_OK) {
+        ESP_LOGE(TAG, "Failed to disable BMI270 power save: %d", rslt);
+        return ESP_FAIL;
+    }
+
+    struct bmi2_sens_config config[2];
+    config[BMI2_ACCEL].type = BMI2_ACCEL;
+    config[BMI2_GYRO].type = BMI2_GYRO;
+
+    rslt = bmi2_get_sensor_config(config, 2, bmi_handle_);
+    if (rslt != BMI2_OK) {
+        ESP_LOGE(TAG, "Failed to get accel/gyro config: %d", rslt);
+        return ESP_FAIL;
+    }
+
+    config[BMI2_ACCEL].cfg.acc.odr = BMI2_ACC_ODR_200HZ;
+    config[BMI2_ACCEL].cfg.acc.range = BMI2_ACC_RANGE_16G;
+    config[BMI2_ACCEL].cfg.acc.bwp = BMI2_ACC_NORMAL_AVG4;
+    config[BMI2_ACCEL].cfg.acc.filter_perf = BMI2_PERF_OPT_MODE;
+
+    config[BMI2_GYRO].cfg.gyr.odr = BMI2_GYR_ODR_200HZ;
+    config[BMI2_GYRO].cfg.gyr.range = BMI2_GYR_RANGE_2000;
+    config[BMI2_GYRO].cfg.gyr.bwp = BMI2_GYR_NORMAL_MODE;
+    config[BMI2_GYRO].cfg.gyr.noise_perf = BMI2_POWER_OPT_MODE;
+    config[BMI2_GYRO].cfg.gyr.filter_perf = BMI2_PERF_OPT_MODE;
+
+    rslt = bmi2_set_sensor_config(config, 2, bmi_handle_);
+    if (rslt != BMI2_OK) {
+        ESP_LOGE(TAG, "Failed to set accel/gyro config: %d", rslt);
+        return ESP_FAIL;
+    }
+
+    uint8_t data = BMI270_TOY_INT_SHAKE_MASK;
+    rslt = bmi2_set_regs(BMI2_INT1_MAP_FEAT_ADDR, &data, 1, bmi_handle_);
+    if (rslt != BMI2_OK) {
+        ESP_LOGE(TAG, "Failed to map shake interrupt: %d", rslt);
+        return ESP_FAIL;
+    }
+
+    struct bmi2_int_pin_config pin_config = {};
+    pin_config.pin_type = BMI2_INT1;
+    pin_config.pin_cfg[0].input_en = BMI2_INT_INPUT_DISABLE;
+    pin_config.pin_cfg[0].lvl = BMI2_INT_ACTIVE_HIGH;
+    pin_config.pin_cfg[0].od = BMI2_INT_PUSH_PULL;
+    pin_config.pin_cfg[0].output_en = BMI2_INT_OUTPUT_ENABLE;
+    pin_config.int_latch = BMI2_INT_NON_LATCH;
+    rslt = bmi2_set_int_pin_config(&pin_config, bmi_handle_);
+    if (rslt != BMI2_OK) {
+        ESP_LOGE(TAG, "Failed to set BMI270 INT pin: %d", rslt);
+        return ESP_FAIL;
+    }
+
+    rslt = bmi2_sensor_enable(sens_list, 2, bmi_handle_);
+    if (rslt != BMI2_OK) {
+        ESP_LOGE(TAG, "Failed to enable accel/gyro: %d", rslt);
+        return ESP_FAIL;
+    }
+
+    rslt = bmi270_enable_toy_shake(bmi_handle_, BMI2_ENABLE);
+    if (rslt != BMI2_OK) {
+        ESP_LOGE(TAG, "Failed to enable shake detection: %d", rslt);
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "BMI270 shake detection enabled");
+    return ESP_OK;
+}
+
+}  // namespace Bmi270Imu
+#endif
 
 temperature_sensor_handle_t temp_sensor = NULL;
 static const st77916_lcd_init_cmd_t vendor_specific_init_yysj[] = {
@@ -225,6 +334,7 @@ gpio_num_t QSPI_PIN_NUM_LCD_RST = QSPI_PIN_NUM_LCD_RST_1;
 gpio_num_t TOUCH_PAD2 = TOUCH_PAD2_1;
 gpio_num_t UART1_TX = UART1_TX_1;
 gpio_num_t UART1_RX = UART1_RX_1;
+i2c_master_bus_handle_t i2c_bus_;
 
 class Charge : public I2cDevice {
 public:
@@ -240,7 +350,12 @@ public:
     {
         ReadRegs(0x08, read_buffer_, 2);
         ReadRegs(0x0c, read_buffer_ + 2, 2);
-        ESP_ERROR_CHECK(temperature_sensor_get_celsius(temp_sensor, &tsens_value));
+        if (temp_sensor) {
+            esp_err_t ts_ret = temperature_sensor_get_celsius(temp_sensor, &tsens_value);
+            if (ts_ret != ESP_OK) {
+                ESP_LOGW(TAG, "Temp read failed: %s", esp_err_to_name(ts_ret));
+            }
+        }
 
         int16_t voltage = static_cast<uint16_t>(read_buffer_[1] << 8 | read_buffer_[0]);
         int16_t current = static_cast<int16_t>(read_buffer_[3] << 8 | read_buffer_[2]);
@@ -386,7 +501,7 @@ private:
 
 class EchoEar : public WifiBoard {
 private:
-    i2c_master_bus_handle_t i2c_bus_;
+    //i2c_master_bus_handle_t i2c_bus_;
     Cst816s* cst816s_;
     Charge* charge_;
     Button boot_button_;
@@ -395,8 +510,66 @@ private:
     esp_timer_handle_t touchpad_timer_;
     esp_lcd_touch_handle_t tp;   // LCD touch handle
     EspVideo* camera_ = nullptr;
+    #ifdef IMU_INT_GPIO
+        i2c_bus_handle_t shared_i2c_bus_handle_ = nullptr;
+        bool imu_ready_ = false;
+        SemaphoreHandle_t imu_isr_mux_ = nullptr;
+    #endif
 
+    #ifdef IMU_INT_GPIO
     void InitializeI2c()
+    {
+    // Initialize I2C peripheral
+    i2c_config_t i2c_bus_cfg = {
+        .mode = I2C_MODE_MASTER,
+        .sda_io_num = AUDIO_CODEC_I2C_SDA_PIN,
+        .scl_io_num = AUDIO_CODEC_I2C_SCL_PIN,
+        .sda_pullup_en = true,
+        .scl_pullup_en = true,
+        .master =
+            {
+                .clk_speed = I2C_MASTER_FREQ_HZ,
+            },
+        .clk_flags = 0,
+    };
+    shared_i2c_bus_handle_ = i2c_bus_create(I2C_NUM_0, &i2c_bus_cfg);
+        if (!shared_i2c_bus_handle_) {
+            ESP_LOGE(TAG, "Failed to create shared I2C bus");
+            ESP_ERROR_CHECK(ESP_FAIL);
+        }
+    
+    #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 3, 0) && !CONFIG_I2C_BUS_BACKWARD_CONFIG
+            i2c_bus_ = i2c_bus_get_internal_bus_handle(shared_i2c_bus_handle_);
+    #else
+    #error "ESP-Spot board requires i2c_bus_get_internal_bus_handle() support"
+    #endif
+            if (!i2c_bus_) {
+                ESP_LOGE(TAG, "Failed to obtain master bus handle");
+                ESP_ERROR_CHECK(ESP_FAIL);
+            }
+
+        esp_err_t imu_ret = Bmi270Imu::Initialize(shared_i2c_bus_handle_);
+        if (imu_ret != ESP_OK) {
+            ESP_LOGW(TAG, "BMI270 initialization failed (%s)", esp_err_to_name(imu_ret));
+        } else {
+            imu_ready_ = true;
+        }
+
+        if (!temp_sensor) {
+            temperature_sensor_config_t temp_sensor_config = TEMPERATURE_SENSOR_CONFIG_DEFAULT(10, 50);
+            esp_err_t ts_ret = temperature_sensor_install(&temp_sensor_config, &temp_sensor);
+            if (ts_ret == ESP_OK) {
+                ts_ret = temperature_sensor_enable(temp_sensor);
+            }
+            if (ts_ret != ESP_OK) {
+                ESP_LOGW(TAG, "Temperature sensor init failed: %s", esp_err_to_name(ts_ret));
+                temp_sensor = NULL;
+            }
+        }
+    }
+
+    #else
+        void InitializeI2c()
     {
         i2c_master_bus_config_t i2c_bus_cfg = {
             .i2c_port = I2C_NUM_0,
@@ -417,6 +590,8 @@ private:
         ESP_ERROR_CHECK(temperature_sensor_enable(temp_sensor));
 
     }
+    #endif
+
     uint8_t DetectPcbVersion()
     {
         esp_err_t ret = i2c_master_probe(i2c_bus_, 0x18, 100);
@@ -503,6 +678,90 @@ private:
         }
     }
 
+#ifdef IMU_INT_GPIO
+    static void imu_isr_callback(void* arg)
+    {
+        auto* self = static_cast<EchoEar*>(arg);
+        if (self && self->imu_isr_mux_ != NULL) {
+            BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+            xSemaphoreGiveFromISR(self->imu_isr_mux_, &xHigherPriorityTaskWoken);
+            portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+        }
+    }
+
+    static void imu_event_task(void* arg)
+    {
+        auto* self = static_cast<EchoEar*>(arg);
+        if (!self) {
+            vTaskDelete(NULL);
+            return;
+        }
+
+        static constexpr int64_t kImuDebounceUs = 120 * 1000;   // 120ms
+        static constexpr int64_t kWiggleWindowUs = 600 * 1000;  // 600ms
+        static constexpr int64_t kListeningCooldownUs = 5000 * 1000;  // 5s
+        const TickType_t kPollTick = pdMS_TO_TICKS(50);
+        int64_t last_motion_us = 0;
+        int64_t pending_wiggle_us = 0;
+        int64_t last_listen_us = 0;
+        bool pending_single = false;
+
+        while (true) {
+            int64_t now = esp_timer_get_time();
+
+            if (pending_single && (now - pending_wiggle_us >= kWiggleWindowUs)) {
+                pending_single = false;
+
+                if (now - last_listen_us >= kListeningCooldownUs) {
+                    auto &app = Application::GetInstance();
+                    auto &audio = app.GetAudioService();
+                    auto state = app.GetDeviceState();
+                    if (state != kDeviceStateListening && state != kDeviceStateConnecting) {
+                        ESP_LOGI(TAG, "IMU single-wiggle: entering listening mode");
+                        if (audio.IsOfflineModeEnabled()) {
+                            audio.TriggerCommandListening();
+                        } else {
+                            app.StartListening();
+                        }
+                        last_listen_us = now;
+                    }
+                }
+            }
+
+            if (self->imu_isr_mux_ && xSemaphoreTake(self->imu_isr_mux_, kPollTick) == pdTRUE) {
+                now = esp_timer_get_time();
+                if (now - last_motion_us < kImuDebounceUs) {
+                    continue;
+                }
+                last_motion_us = now;
+
+                if (!pending_single) {
+                    pending_single = true;
+                    pending_wiggle_us = now;
+                    continue;
+                }
+
+                if (now - pending_wiggle_us <= kWiggleWindowUs) {
+                    pending_single = false;
+                    auto &app = Application::GetInstance();
+                    auto state = app.GetDeviceState();
+                    if (state == kDeviceStateSpeaking) {
+                        ESP_LOGI(TAG, "IMU double-wiggle: stop speaking");
+                        app.ToggleChatState();
+                    } else if (state == kDeviceStateListening || state == kDeviceStateConnecting) {
+                        ESP_LOGI(TAG, "IMU double-wiggle: stop listening");
+                        app.StopListening();
+                    } else {
+                        ESP_LOGI(TAG, "IMU double-wiggle: already idle");
+                    }
+                } else {
+                    pending_wiggle_us = now;
+                }
+            }
+        }
+    }
+#endif
+
     void InitializeCharge()
     {
         charge_ = new Charge(i2c_bus_, 0x55);
@@ -580,6 +839,72 @@ private:
         backlight_ = new PwmBacklight(DISPLAY_BACKLIGHT_PIN, DISPLAY_BACKLIGHT_OUTPUT_INVERT);
         backlight_->RestoreBrightness();
     }
+    
+    void InitializeGpio()
+    {
+        // 初始化GPIO引脚，包括LED_G和其他需要的引脚
+        gpio_config_t gpio_conf = {
+            .pin_bit_mask = (1ULL << LED_G | 1ULL << POWER_CTRL),
+            .mode = GPIO_MODE_OUTPUT,
+            .pull_up_en = GPIO_PULLUP_DISABLE,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE,
+            .intr_type = GPIO_INTR_DISABLE
+        };
+        ESP_ERROR_CHECK(gpio_config(&gpio_conf));
+
+        #ifdef IMU_INT_GPIO
+            gpio_config_t io_conf_imu_int = {
+                .pin_bit_mask = (1ULL << IMU_INT_GPIO),
+                .mode = GPIO_MODE_INPUT,
+                .pull_up_en = GPIO_PULLUP_DISABLE,
+                .pull_down_en = GPIO_PULLDOWN_ENABLE,
+                .intr_type = GPIO_INTR_POSEDGE,
+            };
+            gpio_config(&io_conf_imu_int);
+            gpio_install_isr_service(0);
+        #endif  // IMU_INT_GPIO
+    }
+    
+#ifdef IMU_INT_GPIO
+    void InitializeImuMotion()
+    {
+        if (!imu_ready_) {
+            ESP_LOGW(TAG, "IMU not ready, skip motion interrupt");
+            return;
+        }
+
+        esp_err_t imu_ret = Bmi270Imu::EnableImuIntForMotion();
+        if (imu_ret != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to enable IMU motion interrupt (%s)", esp_err_to_name(imu_ret));
+            return;
+        }
+
+        if (!imu_isr_mux_) {
+            imu_isr_mux_ = xSemaphoreCreateBinary();
+        }
+        if (!imu_isr_mux_) {
+            ESP_LOGE(TAG, "Failed to create IMU ISR semaphore");
+            return;
+        }
+
+#if CONFIG_FREERTOS_UNICORE
+        BaseType_t task_ret = xTaskCreate(imu_event_task, "imu_task", 3 * 1024, this, 5, NULL);
+#else
+        BaseType_t task_ret = xTaskCreatePinnedToCore(imu_event_task, "imu_task", 3 * 1024, this, 5, NULL, 1);
+#endif
+        if (task_ret != pdPASS) {
+            ESP_LOGE(TAG, "Failed to create IMU event task");
+            return;
+        }
+
+        esp_err_t isr_ret = gpio_isr_handler_add(IMU_INT_GPIO, EchoEar::imu_isr_callback, this);
+        if (isr_ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to add IMU ISR handler: %s", esp_err_to_name(isr_ret));
+            return;
+        }
+        gpio_intr_enable(IMU_INT_GPIO);
+    }
+#endif
 
     void InitializeButtons()
     {
@@ -632,12 +957,18 @@ public:
     {
         InitializeI2c();
         uint8_t pcb_verison = DetectPcbVersion();
+        InitializeGpio();
         InitializeCharge();
         InitializeCst816sTouchPad();
 
         InitializeSpi();
         Initializest77916Display(pcb_verison);
         InitializeButtons();
+
+        #ifdef IMU_INT_GPIO
+             InitializeImuMotion();
+        #endif  // IMU_INT_GPIO
+
 #ifdef CONFIG_ESP_VIDEO_ENABLE_USB_UVC_VIDEO_DEVICE
         InitializeCamera();
 #endif // CONFIG_ESP_VIDEO_ENABLE_USB_UVC_VIDEO_DEVICE
