@@ -8,13 +8,18 @@
 #include "backlight.h"
 #include "esp_video.h"
 #include "offline/sd_card_manager.h"
-
+#include "mcp_server.h"
+#include "power_save_timer.h"
+#include "sleep_timer.h"
+#include <atomic>
 #include <esp_log.h>
 #include <esp_timer.h>
-
+#include <esp_sleep.h>
+#include "battery_monitor.h"
 #include <driver/i2c_master.h>
 // #include <driver/i2c.h>
 #include "i2c_device.h"
+#include <driver/rtc_io.h>
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
 #include <esp_lcd_st77916.h>
@@ -24,7 +29,7 @@
 #include "bmi270_api.h"
 #include "i2c_bus.h"
 #endif  // IMU_INT_GPIO
-
+#include "assets/lang_config.h"
 #include "driver/temperature_sensor.h"
 #include <sdmmc_cmd.h>
 #include <driver/sdmmc_host.h>
@@ -32,9 +37,18 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
+#include "touch_button_sensor.h"
 
 #define TAG "EchoEar"
+#define TOUCH_SLIDER_ENABLED 1
+static BatteryMonitor battery_monitor;
 
+namespace {
+constexpr float kOuterTouchThreshold = 0.015f;
+constexpr uint32_t kOuterTouchDebounceTimes = 2;
+constexpr int kTouchVolumeStep = 10;
+constexpr int64_t kTouchSwipeWindowMs = 250;
+}  // namespace
 
 #ifdef IMU_INT_GPIO
 namespace Bmi270Imu {
@@ -502,6 +516,7 @@ private:
 class EchoEar : public WifiBoard {
 private:
     //i2c_master_bus_handle_t i2c_bus_;
+    static constexpr int kLowBatteryNotificationLevel = 20;
     Cst816s* cst816s_;
     Charge* charge_;
     Button boot_button_;
@@ -510,10 +525,25 @@ private:
     esp_timer_handle_t touchpad_timer_;
     esp_lcd_touch_handle_t tp;   // LCD touch handle
     EspVideo* camera_ = nullptr;
+    PowerSaveTimer* power_save_timer_ = nullptr;
+
     #ifdef IMU_INT_GPIO
         i2c_bus_handle_t shared_i2c_bus_handle_ = nullptr;
         bool imu_ready_ = false;
         SemaphoreHandle_t imu_isr_mux_ = nullptr;
+    #endif
+
+    uint32_t wake_touch_channels_[2] = {0};
+    float wake_touch_thresholds_[2] = {kOuterTouchThreshold, kOuterTouchThreshold};
+    uint32_t wake_touch_channel_count_ = 0;
+    touch_button_handle_t wake_touch_handle_ = NULL;
+
+    #if TOUCH_SLIDER_ENABLED
+        bool touch_slider_enabled_ = false;
+        uint32_t touch_active_bitmap_ = 0;
+        bool is_sliding_detected_ = false;
+        uint32_t last_touch_channel_ = UINT32_MAX;
+        int64_t last_touch_time_ms_ = 0;
     #endif
 
     #ifdef IMU_INT_GPIO
@@ -633,6 +663,117 @@ private:
         Cst816s* touchpad = static_cast<Cst816s*>(arg);
         if (touchpad != nullptr) {
             touchpad->NotifyTouchEvent();
+        }
+    }
+
+    #if TOUCH_SLIDER_ENABLED
+    int GetWakeChannelIndex(uint32_t channel) const {
+        for (uint32_t i = 0; i < wake_touch_channel_count_; ++i) {
+            if (wake_touch_channels_[i] == channel) {
+                return static_cast<int>(i);
+            }
+        }
+        return -1;
+    }
+
+    void ChangeVolume(int delta) {
+        auto* codec = GetAudioCodec();
+        if (!codec) {
+            return;
+        }
+
+        int volume = codec->output_volume() + delta;
+        if (volume > 100) volume = 100;
+        else if (volume < 0) volume = 0;
+
+        codec->SetOutputVolume(volume);
+        auto* display = GetDisplay();
+        if (display != nullptr) {
+            display->ShowNotification(Lang::Strings::VOLUME + std::to_string(volume));
+        }
+    }
+    
+    bool HandleOuterTouchSlider(uint32_t channel, touch_state_t state) {
+        if (!touch_slider_enabled_) {
+            return false;
+        }
+
+        const int channel_index = GetWakeChannelIndex(channel);
+        if (channel_index < 0) {
+            return false;
+        }
+
+        const uint32_t channel_mask = 1u << channel_index;
+        const int64_t now_ms = esp_timer_get_time() / 1000;
+
+        if (state == TOUCH_STATE_ACTIVE) {
+            if (touch_active_bitmap_ == 0) {
+                is_sliding_detected_ = false;
+            }
+
+            touch_active_bitmap_ |= channel_mask;
+
+            if (!is_sliding_detected_ && last_touch_channel_ != UINT32_MAX &&
+                last_touch_channel_ != channel &&
+                (now_ms - last_touch_time_ms_) <= kTouchSwipeWindowMs) {
+                is_sliding_detected_ = true;
+
+                if (last_touch_channel_ == static_cast<uint32_t>(TOUCH_PAD1) &&
+                    channel == static_cast<uint32_t>(TOUCH_PAD2)) {
+                    ChangeVolume(kTouchVolumeStep);
+                } else if (last_touch_channel_ == static_cast<uint32_t>(TOUCH_PAD2) &&
+                           channel == static_cast<uint32_t>(TOUCH_PAD1)) {
+                    ChangeVolume(-kTouchVolumeStep);
+                }
+            }
+
+            last_touch_channel_ = channel;
+            last_touch_time_ms_ = now_ms;
+            return true;
+        }
+
+        if (state == TOUCH_STATE_INACTIVE) {
+            touch_active_bitmap_ &= ~channel_mask;
+            if (touch_active_bitmap_ == 0) {
+                is_sliding_detected_ = false;
+                last_touch_channel_ = UINT32_MAX;
+                last_touch_time_ms_ = 0;
+            }
+            return true;
+        }
+
+        return true;
+        }
+    #endif
+
+    static void outer_touch_callback(touch_button_handle_t handle, uint32_t channel,
+                                     touch_state_t state, void* cb_arg) {
+        (void)handle;
+
+        auto* board = static_cast<EchoEar*>(cb_arg);
+        if (board != nullptr) {
+        #if TOUCH_SLIDER_ENABLED
+                    if (board->HandleOuterTouchSlider(channel, state)) {
+                        return;
+                    }
+        #endif
+                }
+            }
+    
+       static void outer_touch_task(void* arg) {
+        auto* board = static_cast<EchoEar*>(arg);
+        if (board == nullptr || board->wake_touch_handle_ == NULL) {
+            ESP_LOGE(TAG, "Invalid outer touch context");
+            vTaskDelete(NULL);
+            return;
+        }
+
+        while (true) {
+            esp_err_t ret = touch_button_sensor_handle_events(board->wake_touch_handle_);
+            if (ret != ESP_OK) {
+                ESP_LOGE(TAG, "Outer touch event handling failed: %s", esp_err_to_name(ret));
+            }
+            vTaskDelay(pdMS_TO_TICKS(20));
         }
     }
 
@@ -786,6 +927,61 @@ private:
         gpio_isr_handler_add(TP_PIN_NUM_INT, EchoEar::touch_isr_callback, cst816s_);
     }
 
+    
+    
+    void InitializeSliderTouch() {
+        wake_touch_channel_count_ = 0;
+
+        if (TOUCH_PAD1 != GPIO_NUM_NC) {
+            wake_touch_channels_[wake_touch_channel_count_++] = static_cast<uint32_t>(TOUCH_PAD1);
+        }
+        if (TOUCH_PAD2 != GPIO_NUM_NC) {
+            wake_touch_channels_[wake_touch_channel_count_++] = static_cast<uint32_t>(TOUCH_PAD2);
+        }
+
+        if (wake_touch_channel_count_ == 0) {
+            ESP_LOGW(TAG, "No outer touch pads configured, skip wake touch");
+            return;
+        }
+
+        #if TOUCH_SLIDER_ENABLED
+                touch_slider_enabled_ = (wake_touch_channel_count_ >= 2);
+                if (!touch_slider_enabled_) {
+                    ESP_LOGW(TAG, "Touch slider enabled but less than 2 touch pads, slider disabled");
+                } else {
+                    ESP_LOGI(TAG, "Touch slider enabled for volume control");
+                }
+        #endif
+
+        touch_button_config_t config = {
+            .channel_num = wake_touch_channel_count_,
+            .channel_list = wake_touch_channels_,
+            .channel_threshold = wake_touch_thresholds_,
+            .channel_gold_value = NULL,
+            .debounce_times = kOuterTouchDebounceTimes,
+            .skip_lowlevel_init = false,
+        };
+
+        esp_err_t ret = touch_button_sensor_create(&config, &wake_touch_handle_, outer_touch_callback, this);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to initialize outer touch wake: %s", esp_err_to_name(ret));
+            wake_touch_handle_ = NULL;
+            return;
+        }
+
+        BaseType_t task_ret = xTaskCreatePinnedToCore(
+            outer_touch_task, "outer_touch_task", 4096, this, 5, NULL, 1);
+        if (task_ret != pdPASS) {
+            ESP_LOGE(TAG, "Failed to create outer touch task");
+            touch_button_sensor_delete(wake_touch_handle_);
+            wake_touch_handle_ = NULL;
+            return;
+        }
+
+        ESP_LOGI(TAG, "Outer touch wake initialized on %lu channel(s)",
+            static_cast<unsigned long>(wake_touch_channel_count_));
+    }
+
     void InitializeSpi()
     {
         const spi_bus_config_t bus_config = TAIJIPI_ST77916_PANEL_BUS_QSPI_CONFIG(QSPI_PIN_NUM_LCD_PCLK,
@@ -864,6 +1060,28 @@ private:
             gpio_install_isr_service(0);
         #endif  // IMU_INT_GPIO
     }
+
+    void InitializePowerSaveTimer() {
+        power_save_timer_ = new PowerSaveTimer(-1, 60, -1);
+        power_save_timer_->OnEnterSleepMode([this]() {
+            ESP_LOGI(TAG, "Enter sleep mode");
+            GetDisplay()->SetPowerSaveMode(true);
+            GetBacklight()->SetBrightness(1);
+            bsp_set_head_led(false);
+        });
+        power_save_timer_->OnExitSleepMode([this]() {
+            ESP_LOGI(TAG, "Exit sleep mode");
+            GetDisplay()->SetPowerSaveMode(false);
+            GetBacklight()->RestoreBrightness();
+            bsp_set_head_led(true);
+        });
+        power_save_timer_->OnShutdownRequest([this]() {
+            ESP_LOGI(TAG, "Shutdown request");
+            bsp_set_peripheral_power(false);
+        });
+        power_save_timer_->SetEnabled(true);
+    }
+
     
 #ifdef IMU_INT_GPIO
     void InitializeImuMotion()
@@ -952,22 +1170,148 @@ private:
     }
 #endif // CONFIG_ESP_VIDEO_ENABLE_USB_UVC_VIDEO_DEVICE
 
+    void InitializeTools() 
+    {
+        auto& mcp_server = McpServer::GetInstance();
+        auto display = GetDisplay();
+        if (display) 
+        {
+            mcp_server.AddUserOnlyTool("self.screen.get_info", "Information about the screen, including width, height, etc.",
+                PropertyList(),
+                [display](const PropertyList& properties) -> ReturnValue {
+                    cJSON *json = cJSON_CreateObject();
+                    cJSON_AddNumberToObject(json, "width", display->width());
+                    cJSON_AddNumberToObject(json, "height", display->height());
+                    // if (dynamic_cast<OledDisplay*>(display)) {
+                    //     cJSON_AddBoolToObject(json, "monochrome", true);
+                    // } else {
+                    cJSON_AddBoolToObject(json, "monochrome", false);
+                    // }
+                    return json;
+                });
+        }
+                mcp_server.AddTool("self.battery.get_info", "Information about the battery, including state of charge, voltage, current, temperature, capacity, state of health, and charge status.",
+                PropertyList(),
+                [this](const PropertyList& properties) -> ReturnValue {
+                    int16_t soc = battery_monitor.getBatterySOC();
+                    int16_t voltage = battery_monitor.getVoltage();
+                    int16_t current = battery_monitor.getCurrent();
+                    uint16_t temperature = battery_monitor.getTemperature();
+                    uint16_t capacity = battery_monitor.getCapacity();
+                    bool is_charging = battery_monitor.is_charging();
+                    ESP_LOGD(TAG, "Battery info: SOC=%d%%, voltage=%dmV, current=%dmA, temperature=%d℃, capacity=%dmAh, charging=%d",
+                        soc, voltage, current, temperature, capacity, is_charging);
+                    cJSON *json = cJSON_CreateObject();
+                    cJSON_AddStringToObject(json, "SOC", (std::to_string(soc)+"%").c_str());
+                    cJSON_AddStringToObject(json, "voltage", (std::to_string(voltage)+"mV").c_str());
+                    cJSON_AddStringToObject(json, "current", (std::to_string(current)+"mA").c_str());
+                    cJSON_AddStringToObject(json, "temperature", (std::to_string(temperature)+"℃").c_str());
+                    cJSON_AddStringToObject(json, "capacity", (std::to_string(capacity)+"mAh").c_str());  
+                    cJSON_AddBoolToObject(json, "charging", is_charging);
+                    return json;
+                });
+            
+    }
+
+    void InitializeBatteryMonitor()
+    {
+        // PowerSaveTimer* power_save_timer = getPowerSaveTimer();
+
+        auto& app = Application::GetInstance();
+        if (!battery_monitor.init()) {
+            ESP_LOGE(TAG, "Battery monitor init failed");
+            return;
+        }
+
+        battery_monitor.setBatteryStatusCallback(
+            [this, &app](const battery_status_t &status) {
+                static battery_status_t bat_last_status = {};
+                static bool last_low_battery = false;
+                static bool status_initialized = false;
+
+                const int soc = battery_monitor.getBatterySOC();
+                const bool is_low_battery = status.DSG && soc <= kLowBatteryNotificationLevel;
+                // const int soc = 10; 
+                // const bool is_low_battery = soc <= kLowBatteryNotificationLevel;
+
+                if (!status_initialized) {
+                    if (power_save_timer_) {
+                        power_save_timer_->SetEnabled(status.DSG != 0);
+                    } 
+                    bat_last_status = status;
+                    last_low_battery = false;
+                    status_initialized = true;
+                    return;
+                }
+
+                if (bat_last_status.FC != status.FC) {
+                    if (status.DSG == 0) {
+                        if (power_save_timer_) {
+                            power_save_timer_->SetEnabled(false);
+                        } 
+                    } else {
+                        power_save_timer_->SetEnabled(true);
+                    }
+                }
+
+                const bool charging_started = status.DSG == 0 && bat_last_status.DSG != 0 && !status.FC;
+                const bool full_detected = status.FC && !bat_last_status.FC;
+                const bool low_battery_started = is_low_battery && !last_low_battery;
+
+                bat_last_status = status;
+                last_low_battery = is_low_battery;
+
+                if (low_battery_started) {
+                    app.Schedule([]() {
+                        auto& app = Application::GetInstance();
+                        auto display = Board::GetInstance().GetDisplay();
+                        if (display != nullptr) {
+                            display->ShowNotification(Lang::Strings::BATTERY_LOW, 1000);
+                        }
+                        app.PlaySound(Lang::Sounds::OGG_LOW_BATTERY);
+                    });
+                }
+
+                if (charging_started) {
+                    app.Schedule([]() {
+                        auto display = Board::GetInstance().GetDisplay();
+                        if (display != nullptr) {
+                            display->ShowNotification(Lang::Strings::BATTERY_CHARGING, 1000);
+                        }
+                    });
+                } else if (full_detected) {
+                    app.Schedule([]() {
+                        auto display = Board::GetInstance().GetDisplay();
+                        if (display != nullptr) {
+                            display->ShowNotification(Lang::Strings::BATTERY_FULL, 1000);
+                        }
+                    });
+                }
+            });
+        battery_monitor.setBatteryShutdownCallback(
+            [&app]() { app.PlaySound(Lang::Sounds::OGG_LOW_BATTERY); });
+    }
+
 public:
     EchoEar() : boot_button_(BOOT_BUTTON_GPIO)
     {
         InitializeI2c();
         uint8_t pcb_verison = DetectPcbVersion();
         InitializeGpio();
-        InitializeCharge();
+        //InitializeCharge();
         InitializeCst816sTouchPad();
 
         InitializeSpi();
         Initializest77916Display(pcb_verison);
         InitializeButtons();
+        InitializeSliderTouch();
 
         #ifdef IMU_INT_GPIO
              InitializeImuMotion();
         #endif  // IMU_INT_GPIO
+
+        InitializeBatteryMonitor();
+        InitializeTools();
 
 #ifdef CONFIG_ESP_VIDEO_ENABLE_USB_UVC_VIDEO_DEVICE
         InitializeCamera();
@@ -1022,6 +1366,43 @@ public:
 
     virtual offline::SDCardManager* GetSDCard() override {
         return &offline::SDCardManager::GetInstance();
+    }
+
+    virtual bool GetBatteryLevel(int &level, bool &charging, bool &discharging) override
+    {
+        if (battery_monitor.getHandle()) {
+            level = battery_monitor.getBatterySOC();
+            charging = battery_monitor.is_charging();
+            discharging = !charging;
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    virtual bool GetTemperature(float& temperature) override
+    {
+        if (battery_monitor.getHandle()) {
+            temperature = battery_monitor.getTemperature();
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    virtual void SetPowerSaveLevel(PowerSaveLevel level) override {
+        if (level != PowerSaveLevel::LOW_POWER) {
+            power_save_timer_->WakeUp();
+        }
+        WifiBoard::SetPowerSaveLevel(level);
+    }
+
+    esp_err_t bsp_set_head_led(bool on) {
+        return gpio_set_level(LED_G, !on);  // GREEN LED
+    }
+
+    esp_err_t bsp_set_peripheral_power(bool on) {
+        return gpio_set_level(POWER_CTRL, !on);
     }
 };
 

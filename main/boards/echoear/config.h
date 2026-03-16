@@ -70,8 +70,8 @@
 #define UART1_RX_1     GPIO_NUM_5
 #define UART1_RX_2     GPIO_NUM_4
 #define TOUCH_PAD2_1     GPIO_NUM_NC
-#define TOUCH_PAD2_2     GPIO_NUM_6
-#define TOUCH_PAD1     GPIO_NUM_7
+#define TOUCH_PAD2_2     GPIO_NUM_7
+#define TOUCH_PAD1     GPIO_NUM_6
 
 #define DISPLAY_OFFSET_X  0
 #define DISPLAY_OFFSET_Y  0
