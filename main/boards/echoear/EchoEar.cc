@@ -1305,6 +1305,7 @@ public:
         Initializest77916Display(pcb_verison);
         InitializeButtons();
         InitializeSliderTouch();
+        InitializePowerSaveTimer();
 
         #ifdef IMU_INT_GPIO
              InitializeImuMotion();
@@ -1392,7 +1393,9 @@ public:
 
     virtual void SetPowerSaveLevel(PowerSaveLevel level) override {
         if (level != PowerSaveLevel::LOW_POWER) {
-            power_save_timer_->WakeUp();
+            if (power_save_timer_) {
+                power_save_timer_->WakeUp();
+            }
         }
         WifiBoard::SetPowerSaveLevel(level);
     }
