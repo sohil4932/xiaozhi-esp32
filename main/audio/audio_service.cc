@@ -332,7 +332,7 @@ void AudioService::AudioOutputTask() {
         if (local_playback_active_.load() && playback_finished && callbacks_.on_playback_change) {
             auto& board = Board::GetInstance();
             auto display = board.GetDisplay();
-            display->SetEmotion("neutral");
+            // display->SetEmotion("neutral");
             local_playback_active_.store(false);
             callbacks_.on_playback_change(false);
         }
@@ -980,54 +980,16 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
                     ESP_LOGI("AudioService", "Volume command handled, new volume=%d", volume);
                     std::string notification =
                         std::string(Lang::Strings::VOLUME) + std::to_string(volume);
-                    const char* emotion = command_id == 6 ? "happy" : "relaxed";
-                    app.Schedule([notification = std::move(notification), emotion]() {
+                    // const char* emotion = command_id == 6 ? "happy" : "relaxed";
+                    app.Schedule([notification = std::move(notification)]() {
                         auto display = Board::GetInstance().GetDisplay();
                         if (display) {
                             display->ShowNotification(notification.c_str());
-                            display->SetEmotion(emotion);
+                            // display->SetEmotion(emotion);
                         }
                     });
                     return;
                 }
-
-                // Change emotion based on detected command id
-                const char* emotion = "neutral";
-                switch (command_id) {
-                    case 1: // tell me joke
-                        emotion = "funny";
-                        break;
-
-                    case 2: // tell me story
-                        emotion = "relaxed";
-                        break;
-
-                    case 3: // good night
-                        emotion = "sleepy";
-                        break;
-
-                    case 4: // make me laugh
-                        emotion = "laughing";
-                        break;
-
-                    case 5: // sing a song
-                        emotion = "happy";
-                        break;
-
-                    case 8: // next
-                        emotion = "neutral";
-                        break;
-                    
-                    default:
-                        emotion = "neutral";
-                        break;
-                }
-                    app.Schedule([emotion]() {
-                        auto display = Board::GetInstance().GetDisplay();
-                        if (display) {
-                            display->SetEmotion(emotion);
-                        }
-                    });
 
                 // Send to playback task
                 playback_msg msg = {&audio_player, command_id};

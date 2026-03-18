@@ -74,7 +74,7 @@ void Application::Initialize() {
     display->SetupUI();
 
     // Set initial emotion to neutral (idle state)
-    display->SetEmotion("neutral");
+    // display->SetEmotion("neutral");
 
     // Print board name/version info (will be cleared later in WiFiConfiguring state)
     display->SetChatMessage("system", SystemInfo::GetUserAgent().c_str());
@@ -130,7 +130,8 @@ void Application::Initialize() {
             auto display = board.GetDisplay();
             if (display) {
                 // Listening → happy expression, Idle → neutral expression
-                display->SetEmotion(listening ? "ideal" : "neutral");
+                //display->SetEmotion(listening ? "ideal" : "neutral");
+                display->SetStatus(listening ? Lang::Strings::LISTENING : Lang::Strings::STANDBY);
             }
         });
     };
@@ -139,8 +140,15 @@ void Application::Initialize() {
 
         // Skip visual feedback entirely in offline mode
         if (audio_service_.IsOfflineModeEnabled()) {
-            return;
-        }
+        Schedule([playing]() {
+            auto& board = Board::GetInstance();
+            auto display = board.GetDisplay();
+            if (display) {
+                display->SetStatus(playing ? Lang::Strings::SPEAKING : Lang::Strings::STANDBY);
+            }
+        });
+        return;
+    }
 
         // Online mode only: Use SetStatus
         Schedule([playing]() {

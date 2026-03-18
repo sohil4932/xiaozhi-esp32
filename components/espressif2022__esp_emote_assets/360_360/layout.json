@@ -23,7 +23,7 @@
     "type": "image",
     "name": "status_icon",
     "align": "GFX_ALIGN_TOP_MID",
-    "x": -100,
+    "x": 0,
     "y": 38
   },
   {
@@ -54,9 +54,9 @@
   {
     "type": "label",
     "name": "toast_label",
-    "align": "GFX_ALIGN_TOP_MID",
+    "align": "GFX_ALIGN_BOTTOM_MID",
     "x": 0,
-    "y": 40,
+    "y": -40,
     "width": 160,
     "height": 40,
     "label": {
@@ -67,16 +67,6 @@
         "loop": true,
         "speed": 10
       }
-    }
-  },
-  {
-    "type": "anim",
-    "name": "listen_anim",
-    "align": "GFX_ALIGN_TOP_MID",
-    "x": 0,
-    "y": 25,
-    "anim": {
-      "mirror": "false"
     }
   },
   {
