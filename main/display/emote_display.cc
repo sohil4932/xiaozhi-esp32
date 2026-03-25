@@ -183,9 +183,39 @@ void EmoteDisplay::SetStatus(const char* const status)
 void EmoteDisplay::ShowNotification(const char* notification, int duration_ms)
 {
     ESP_LOGI(TAG, "ShowNotification: %s", notification);
-    if (emote_handle_ && notification && strlen(notification) > 0) {
-        emote_set_event_msg(emote_handle_, EMOTE_MGR_EVT_SYS, notification);
+
+    // Stop any pending clear timer
+    if (notification_timer_) {
+        esp_timer_stop(notification_timer_);
+        esp_timer_delete(notification_timer_);
+        notification_timer_ = nullptr;
     }
+
+    if (!emote_handle_) return;
+
+    if (!notification || strlen(notification) == 0) {
+        emote_set_event_msg(emote_handle_, EMOTE_MGR_EVT_IDLE, nullptr);
+        return;
+    }
+
+    emote_set_event_msg(emote_handle_, EMOTE_MGR_EVT_SYS, notification);
+
+    // Start a one-shot timer to clear the notification after duration_ms
+    esp_timer_create_args_t timer_args = {
+        .callback = [](void* arg) {
+            auto* self = static_cast<EmoteDisplay*>(arg);
+            // Return to idle state — clears text and hides status icon
+            emote_set_event_msg(self->emote_handle_, EMOTE_MGR_EVT_IDLE, nullptr);
+            esp_timer_delete(self->notification_timer_);
+            self->notification_timer_ = nullptr;
+        },
+        .arg = this,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "notif_timer",
+        .skip_unhandled_events = true,
+    };
+    esp_timer_create(&timer_args, &notification_timer_);
+    esp_timer_start_once(notification_timer_, (uint64_t)duration_ms * 1000);
 }
 
 void EmoteDisplay::TriggerEmoteEvent(const char* event_type)

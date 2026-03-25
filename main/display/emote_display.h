@@ -39,6 +39,7 @@ private:
     virtual void Unlock() override;
 
     emote_handle_t emote_handle_ = nullptr;
+    esp_timer_handle_t notification_timer_ = nullptr;
 
 };
 

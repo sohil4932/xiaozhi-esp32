@@ -446,7 +446,7 @@ void Application::CheckAssetsVersion() {
         assets.Apply();
     }
     display->SetChatMessage("system", "");
-    display->SetEmotion("microchip_ai");
+    // display->SetEmotion("microchip_ai");
 }
 
 void Application::CheckNewVersion() {
@@ -606,18 +606,18 @@ void Application::InitializeProtocol() {
                 auto text = cJSON_GetObjectItem(root, "text");
                 if (cJSON_IsString(text)) {
                     ESP_LOGI(TAG, "<< %s", text->valuestring);
-                    Schedule([display, message = std::string(text->valuestring)]() {
-                        display->SetChatMessage("assistant", message.c_str());
-                    });
+                    // Schedule([display, message = std::string(text->valuestring)]() {
+                    //     display->SetChatMessage("assistant", message.c_str());
+                    // });
                 }
             }
         } else if (strcmp(type->valuestring, "stt") == 0) {
             auto text = cJSON_GetObjectItem(root, "text");
             if (cJSON_IsString(text)) {
                 ESP_LOGI(TAG, ">> %s", text->valuestring);
-                Schedule([display, message = std::string(text->valuestring)]() {
-                    display->SetChatMessage("user", message.c_str());
-                });
+                // Schedule([display, message = std::string(text->valuestring)]() {
+                //     display->SetChatMessage("user", message.c_str());
+                // });
             }
         } else if (strcmp(type->valuestring, "llm") == 0) {
             auto emotion = cJSON_GetObjectItem(root, "emotion");
