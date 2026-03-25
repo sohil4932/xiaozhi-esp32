@@ -94,8 +94,12 @@ void Application::Initialize() {
     // Enable offline mode for SD card command playback (if SD card is available)
     auto* sd = board.GetSDCard();
     if (sd && sd->IsMounted()) {
+#if CONFIG_ENABLE_OFFLINE_MODE
         ESP_LOGI(TAG, "SD card available, enabling offline command mode");
         audio_service_.SetOfflineModeEnabled(true);
+#else
+        ESP_LOGI(TAG, "SD card available, but offline mode is disabled by config");
+#endif
 
         // Play boot sound from SD card
         std::vector<uint8_t> boot_audio;
@@ -121,28 +125,8 @@ void Application::Initialize() {
     callbacks.on_vad_change = [this](bool speaking) {
         xEventGroupSetBits(event_group_, MAIN_EVENT_VAD_CHANGE);
     };
-    callbacks.on_command_listening_change = [this](bool listening) {
-        ESP_LOGI("Application", "Command listening change: listening=%d", listening);
-
-        // Change emote expression for visual feedback
-        Schedule([listening]() {
-            auto& board = Board::GetInstance();
-            auto display = board.GetDisplay();
-            if (display) {
-                // Listening → happy expression, Idle → neutral expression
-                display->SetEmotion(listening ? "ideal" : "neutral");
-            }
-        });
-    };
     callbacks.on_playback_change = [this](bool playing) {
         ESP_LOGI("Application", "Playback change: playing=%d", playing);
-
-        // Skip visual feedback entirely in offline mode
-        if (audio_service_.IsOfflineModeEnabled()) {
-            return;
-        }
-
-        // Online mode only: Use SetStatus
         Schedule([playing]() {
             auto& board = Board::GetInstance();
             auto display = board.GetDisplay();
@@ -947,7 +931,6 @@ void Application::HandleStateChangedEvent() {
             display->SetStatus(Lang::Strings::STANDBY);
             display->ClearChatMessages();  // Clear messages first
             display->SetEmotion("neutral"); // Then set emotion (wechat mode checks child count)
-            audio_service_.SetOfflineModeEnabled(false);  // Disable offline mode in online state
             audio_service_.EnableVoiceProcessing(false);
             audio_service_.EnableWakeWordDetection(true);
             break;
@@ -955,12 +938,10 @@ void Application::HandleStateChangedEvent() {
             display->SetStatus(Lang::Strings::CONNECTING);
             display->SetEmotion("neutral");
             display->SetChatMessage("system", "");
-            audio_service_.SetOfflineModeEnabled(false);  // Disable offline mode in online state
             break;
         case kDeviceStateListening:
             display->SetStatus(Lang::Strings::LISTENING);
             display->SetEmotion("neutral");
-            audio_service_.SetOfflineModeEnabled(false);  // Disable offline mode in online state
 
             ESP_LOGI(TAG, "Listening state: play_popup=%d, processor_running=%d, mode=%d",
                      play_popup_on_listening_, audio_service_.IsAudioProcessorRunning(), listening_mode_);
@@ -1044,7 +1025,9 @@ void Application::HandleStateChangedEvent() {
                     .callback = [](void* arg) {
                         Application* app = static_cast<Application*>(arg);
                         app->Schedule([app]() {
+#if CONFIG_ENABLE_OFFLINE_MODE
                             app->audio_service_.SetOfflineModeEnabled(true);
+#endif
                             app->audio_service_.EnableWakeWordDetection(true);
                         });
                     },

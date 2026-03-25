@@ -488,20 +488,91 @@ private:
                             return;
                         }
 
-                        auto& audio = app.GetAudioService();
-                        if (audio.IsOfflineModeEnabled()) {
-                            // In offline mode, trigger command listening on touch
-                            ESP_LOGI(TAG, "Screen touch: Triggering command listening mode");
-                            audio.TriggerCommandListening();
-                        } else {
-                            // In online mode, toggle chat state
-                            app.ToggleChatState();
-                        }
+                        app.ToggleChatState();
                     });
                 }
             }
         }
     }
+
+#ifdef IMU_INT_GPIO
+    static void imu_isr_callback(void* arg)
+    {
+        auto* self = static_cast<EchoEar*>(arg);
+        if (self && self->imu_isr_mux_ != NULL) {
+            BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+            xSemaphoreGiveFromISR(self->imu_isr_mux_, &xHigherPriorityTaskWoken);
+            portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+        }
+    }
+
+    static void imu_event_task(void* arg)
+    {
+        auto* self = static_cast<EchoEar*>(arg);
+        if (!self) {
+            vTaskDelete(NULL);
+            return;
+        }
+
+        static constexpr int64_t kImuDebounceUs = 120 * 1000;   // 120ms
+        static constexpr int64_t kWiggleWindowUs = 600 * 1000;  // 600ms
+        static constexpr int64_t kListeningCooldownUs = 5000 * 1000;  // 5s
+        const TickType_t kPollTick = pdMS_TO_TICKS(50);
+        int64_t last_motion_us = 0;
+        int64_t pending_wiggle_us = 0;
+        int64_t last_listen_us = 0;
+        bool pending_single = false;
+
+        while (true) {
+            int64_t now = esp_timer_get_time();
+
+            if (pending_single && (now - pending_wiggle_us >= kWiggleWindowUs)) {
+                pending_single = false;
+
+                if (now - last_listen_us >= kListeningCooldownUs) {
+                    auto &app = Application::GetInstance();
+                    auto state = app.GetDeviceState();
+                    if (state != kDeviceStateListening && state != kDeviceStateConnecting) {
+                        ESP_LOGI(TAG, "IMU single-wiggle: entering listening mode");
+                        app.StartListening();
+                        last_listen_us = now;
+                    }
+                }
+            }
+
+            if (self->imu_isr_mux_ && xSemaphoreTake(self->imu_isr_mux_, kPollTick) == pdTRUE) {
+                now = esp_timer_get_time();
+                if (now - last_motion_us < kImuDebounceUs) {
+                    continue;
+                }
+                last_motion_us = now;
+
+                if (!pending_single) {
+                    pending_single = true;
+                    pending_wiggle_us = now;
+                    continue;
+                }
+
+                if (now - pending_wiggle_us <= kWiggleWindowUs) {
+                    pending_single = false;
+                    auto &app = Application::GetInstance();
+                    auto state = app.GetDeviceState();
+                    if (state == kDeviceStateSpeaking) {
+                        ESP_LOGI(TAG, "IMU double-wiggle: stop speaking");
+                        app.ToggleChatState();
+                    } else if (state == kDeviceStateListening || state == kDeviceStateConnecting) {
+                        ESP_LOGI(TAG, "IMU double-wiggle: stop listening");
+                        app.StopListening();
+                    } else {
+                        ESP_LOGI(TAG, "IMU double-wiggle: already idle");
+                    }
+                } else {
+                    pending_wiggle_us = now;
+                }
+            }
+        }
+    }
+#endif
 
     void InitializeCharge()
     {

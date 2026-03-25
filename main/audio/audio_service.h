@@ -80,7 +80,6 @@ struct AudioServiceCallbacks {
     std::function<void(const std::string&)> on_wake_word_detected;
     std::function<void(bool)> on_vad_change;
     std::function<void(void)> on_audio_testing_queue_full;
-    std::function<void(bool)> on_command_listening_change;  // true = listening started, false = stopped
     std::function<void(bool)> on_playback_change;  // true = playback started, false = stopped
 };
 
@@ -126,10 +125,6 @@ public:
     void EnableVoiceProcessing(bool enable);
     void EnableAudioTesting(bool enable);
     void EnableDeviceAec(bool enable);
-    void SetOfflineModeEnabled(bool enabled);
-    bool IsOfflineModeEnabled() const;
-    void TriggerCommandListening();  // Manually trigger offline command listening
-
     void SetCallbacks(AudioServiceCallbacks& callbacks);
 
     bool PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> packet, bool wait = false);
@@ -184,10 +179,7 @@ private:
     bool voice_detected_ = false;
     bool service_stopped_ = true;
     bool audio_input_need_warmup_ = false;
-    std::atomic<bool> abort_playback_{false};
-    std::atomic<bool> command_listening_active_{false};
     std::atomic<bool> local_playback_active_{false};
-    std::atomic<bool> command_trigger_in_progress_{false};
 
     esp_timer_handle_t audio_power_timer_ = nullptr;
     std::chrono::steady_clock::time_point last_input_time_;

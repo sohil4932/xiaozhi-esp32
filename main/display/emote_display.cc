@@ -63,7 +63,12 @@ static void OnFlushCallback(int x_start, int y_start, int x_end, int y_end, cons
 {
     esp_lcd_panel_handle_t panel = (esp_lcd_panel_handle_t)emote_get_user_data(handle);
     if (panel != nullptr) {
-        esp_lcd_panel_draw_bitmap(panel, x_start, y_start, x_end, y_end, data);
+        esp_err_t err = esp_lcd_panel_draw_bitmap(panel, x_start, y_start, x_end, y_end, data);
+        if (err != ESP_OK) {
+            // SPI queue full or other transient error — notify flush done immediately
+            // to prevent the emote render task from deadlocking on the flush semaphore.
+            emote_notify_flush_finished(handle);
+        }
     }
 }
 

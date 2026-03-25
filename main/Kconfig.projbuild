@@ -868,6 +868,15 @@ menu "SD Card Configuration"
         help
             Enable SD card support for offline audio playback
 
+    config ENABLE_OFFLINE_MODE
+        bool "Enable Offline Voice Command Mode"
+        depends on USE_SD_CARD
+        default y
+        help
+            When enabled, the device switches to offline voice command mode
+            (using MultiNet) whenever an SD card is mounted.
+            Disable to always use online mode even when an SD card is present.
+
     choice SD_CARD_MODE
         prompt "SD Card Interface Mode"
         depends on USE_SD_CARD

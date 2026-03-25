@@ -1,6 +1,5 @@
 #include "audio_service.h"
-#include "../offline/simple_audio_player.h"
-#include "../offline/sd_card_manager.h"
+#include "../application.h"
 #include "../boards/common/board.h"
 #include "../display/display.h"
 #include "assets/lang_config.h"
@@ -305,12 +304,6 @@ void AudioService::AudioOutputTask() {
         audio_queue_cv_.notify_all();
         lock.unlock();
 
-        // Don't re-enable output if we're in command listening mode (offline)
-        if (command_listening_active_.load()) {
-            ESP_LOGD("AudioService", "Skipping output - command listening active");
-            continue;
-        }
-
         if (!codec_->output_enabled()) {
             esp_timer_stop(audio_power_timer_);
             esp_timer_start_periodic(audio_power_timer_, AUDIO_POWER_CHECK_INTERVAL_MS * 1000);
@@ -361,15 +354,6 @@ void AudioService::OpusCodecTask() {
 
         /* Decode the audio from decode queue */
         if (!audio_decode_queue_.empty() && audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE) {
-            // Check if playback was aborted (e.g., user tapped during playback)
-            // If so, discard packets instead of decoding to prevent playing stale audio
-            if (abort_playback_.load()) {
-                audio_decode_queue_.pop_front();
-                audio_queue_cv_.notify_all();
-                lock.unlock();
-                continue;
-            }
-
             auto packet = std::move(audio_decode_queue_.front());
             audio_decode_queue_.pop_front();
             audio_queue_cv_.notify_all();
@@ -620,11 +604,6 @@ void AudioService::EnableWakeWordDetection(bool enable) {
         wake_word_->Start();
         xEventGroupSetBits(event_group_, AS_EVENT_WAKE_WORD_RUNNING);
 
-        auto afe_wake_word = dynamic_cast<AfeWakeWord*>(wake_word_.get());
-        if (afe_wake_word != nullptr && afe_wake_word->IsOfflineModeEnabled()) {
-            // Delay preload a bit to avoid competing with immediate UI work after state transition.
-            afe_wake_word->PreloadCommandModel(1500);
-        }
     } else {
         wake_word_->Stop();
         xEventGroupClearBits(event_group_, AS_EVENT_WAKE_WORD_RUNNING);
@@ -684,65 +663,6 @@ void AudioService::EnableDeviceAec(bool enable) {
     }
 
     audio_processor_->EnableDeviceAec(enable);
-}
-
-void AudioService::SetOfflineModeEnabled(bool enabled) {
-    ESP_LOGI(TAG, "%s offline command mode", enabled ? "Enabling" : "Disabling");
-    auto afe_wake_word = dynamic_cast<AfeWakeWord*>(wake_word_.get());
-    if (afe_wake_word != nullptr) {
-        afe_wake_word->SetOfflineModeEnabled(enabled);
-        if (enabled && wake_word_initialized_) {
-            // Delay preload a bit to avoid immediate post-touch UI stutter.
-            afe_wake_word->PreloadCommandModel(1500);
-        }
-    }
-}
-
-bool AudioService::IsOfflineModeEnabled() const {
-    auto afe_wake_word = dynamic_cast<AfeWakeWord*>(wake_word_.get());
-    if (afe_wake_word != nullptr) {
-        return afe_wake_word->IsOfflineModeEnabled();
-    }
-    return false;
-}
-
-void AudioService::TriggerCommandListening() {
-    if (command_trigger_in_progress_.exchange(true)) {
-        ESP_LOGW(TAG, "Command trigger already in progress");
-        return;
-    }
-
-    if (dynamic_cast<AfeWakeWord*>(wake_word_.get()) == nullptr) {
-        command_trigger_in_progress_.store(false);
-        ESP_LOGW(TAG, "Cannot trigger command listening - not using AFE wake word");
-        return;
-    }
-
-    auto trigger_task = [](void* arg) {
-        auto* self = static_cast<AudioService*>(arg);
-        auto* afe_wake_word = dynamic_cast<AfeWakeWord*>(self->wake_word_.get());
-        if (afe_wake_word != nullptr) {
-            // Command detection needs wake-word pipeline task running.
-            if (!self->IsWakeWordRunning()) {
-                ESP_LOGW(TAG, "Wake word detection not running, enabling before command listening");
-                self->EnableWakeWordDetection(true);
-            }
-            afe_wake_word->TriggerCommandListening();
-        }
-        self->command_trigger_in_progress_.store(false);
-        vTaskDelete(NULL);
-    };
-
-#if CONFIG_FREERTOS_UNICORE
-    BaseType_t ret = xTaskCreate(trigger_task, "cmd_trigger", 4096, this, 3, nullptr);
-#else
-    // Pin to CPU0 to avoid blocking/contending with touch task on CPU1.
-    BaseType_t ret = xTaskCreatePinnedToCore(trigger_task, "cmd_trigger", 4096, this, 3, nullptr, 0);
-#endif
-    if (ret != pdPASS) {
-        command_trigger_in_progress_.store(false);
-        ESP_LOGE(TAG, "Failed to create command trigger task");
-    }
 }
 
 void AudioService::SetCallbacks(AudioServiceCallbacks& callbacks) {
@@ -828,16 +748,11 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
     models_list_ = models_list;
 
 #if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
-    // Priority: Use AfeWakeWord if WakeNet exists (it supports both WakeNet + MultiNet)
-    // Only use CustomWakeWord if MultiNet exists but no WakeNet
     if (esp_srmodel_filter(models_list_, ESP_WN_PREFIX, NULL) != nullptr) {
-        ESP_LOGI(TAG, "Found WakeNet model, creating AfeWakeWord (supports wake word + offline commands)");
+        ESP_LOGI(TAG, "Found WakeNet model, creating AfeWakeWord");
         wake_word_ = std::make_unique<AfeWakeWord>();
-    } else if (esp_srmodel_filter(models_list_, ESP_MN_PREFIX, NULL) != nullptr) {
-        ESP_LOGI(TAG, "Found MultiNet model only, creating CustomWakeWord");
-        wake_word_ = std::make_unique<CustomWakeWord>();
     } else {
-        ESP_LOGW(TAG, "No WakeNet or MultiNet model found");
+        ESP_LOGW(TAG, "No WakeNet model found");
         wake_word_ = nullptr;
     }
 #else
@@ -854,214 +769,6 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
                 callbacks_.on_wake_word_detected(wake_word);
             }
         });
-
-        // Setup command callback for offline mode
-        auto afe_wake_word = dynamic_cast<AfeWakeWord*>(wake_word_.get());
-        if (afe_wake_word != nullptr) {
-            // Create static audio player (persists across callbacks)
-            static offline::SimpleAudioPlayer audio_player;
-            static bool player_initialized = false;
-
-            if (!player_initialized) {
-                if (audio_player.Initialize(this) == ESP_OK) {
-                    player_initialized = true;
-                    ESP_LOGI("AudioService", "Offline audio player initialized");
-                }
-            }
-
-            // Create a dedicated task for offline playback with large stack
-            static TaskHandle_t playback_task_handle = nullptr;
-            static QueueHandle_t playback_queue = nullptr;
-
-            struct playback_msg {
-                offline::SimpleAudioPlayer* player;
-                int cmd_id;
-            };
-
-            if (playback_task_handle == nullptr) {
-                playback_queue = xQueueCreate(3, sizeof(playback_msg));
-
-                struct TaskArgs {
-                    QueueHandle_t queue;
-                    AudioService* audio_service;
-                };
-
-                static TaskArgs task_args = {playback_queue, this};
-
-                xTaskCreate([](void* arg) {
-                    auto* args = static_cast<TaskArgs*>(arg);
-                    auto* queue = args->queue;
-                    auto* audio_service = args->audio_service;
-                    playback_msg msg;
-
-                    while (true) {
-                        if (xQueueReceive(queue, &msg, portMAX_DELAY) == pdTRUE) {
-                            // Check if playback has been aborted before processing
-                            if (audio_service->abort_playback_.load()) {
-                                ESP_LOGI("AudioService", "Playback task: Command ignored due to abort flag");
-                                audio_service->abort_playback_.store(false);
-                                continue;
-                            }
-
-                            auto& board = Board::GetInstance();
-                            auto* sd = board.GetSDCard();
-
-                            if (!sd || !sd->IsMounted()) {
-                                ESP_LOGW("AudioService", "SD card not available");
-                                continue;
-                            }
-
-                            const char* folder = nullptr;
-                            switch (msg.cmd_id) {
-                                case 1:
-                                    // "tell me joke"
-                                    folder = "/sdcard/jokes";
-                                    break;
-                                case 2:
-                                    // "tell me story"
-                                    folder = "/sdcard/stories";
-                                    break;
-                                case 3:
-                                    // "good night"
-                                    folder = "/sdcard/goodnight";
-                                    break;
-                                case 4:
-                                    // "make me laugh"
-                                    folder = "/sdcard/jokes";
-                                    break;
-                                case 5:
-                                    // "sing a song"
-                                    folder = "/sdcard/songs";
-                                    break;
-                            }
-
-                            if (folder) {
-                                ESP_LOGI("AudioService", "Playing from %s", folder);
-                                msg.player->PlayRandomFromFolder(folder);
-                            }
-                        }
-                    }
-                }, "offline_play", 8192, &task_args, 5, &playback_task_handle);
-            }
-
-            afe_wake_word->OnCommandDetected([this, &audio_player](int command_id, const std::string& command_string) {
-                ESP_LOGI("AudioService", "Offline command detected! ID: %d", command_id);
-
-                    auto& board = Board::GetInstance();
-                    auto display = board.GetDisplay();
-
-                if (command_id == 6 || command_id == 7) {
-                    if (command_id == 6) {
-                        codec_->IncreaseVolume(10);
-                    } else {
-                        codec_->DecreaseVolume(10);
-                    }
-
-                    const int volume = codec_->output_volume();
-                    ESP_LOGI("AudioService", "Volume command handled, new volume=%d", volume);
-                    if (display) {
-                        std::string notification = std::string(Lang::Strings::VOLUME) + std::to_string(volume);
-                        display->ShowNotification(notification.c_str());
-                        display->SetEmotion(command_id == 6 ? "happy" : "relaxed");
-                    }
-                    return;
-                }
-
-                // Change emotion based on detected command id 
-                switch (command_id) {
-                    case 1: // tell me joke
-                        display->SetEmotion("funny");
-                        break;
-
-                    case 2: // tell me story
-                        display->SetEmotion("relaxed");
-                        break;
-
-                    case 3: // good night
-                        display->SetEmotion("sleepy");
-                        break;
-
-                    case 4: // make me laugh
-                        display->SetEmotion("laughing");
-                        break;
-
-                    case 5: // sing a song
-                        display->SetEmotion("happy");
-                        break;
-
-                    default:
-                        display->SetEmotion("neutral");
-                        break;
-                }
-
-                // Send to playback task
-                playback_msg msg = {&audio_player, command_id};
-                xQueueSend(playback_queue, &msg, 0);
-            });
-
-            // Setup command listening change callback
-            afe_wake_word->OnCommandListeningChange([this, playback_queue](bool listening) {
-                ESP_LOGI("AudioService", "Command listening change callback: listening=%d", listening);
-
-                if (listening) {
-                    // Stop any ongoing playback when entering command listening mode
-                    ESP_LOGI("AudioService", "Stopping playback for command listening");
-
-                    // Set command listening flag to prevent audio output task from re-enabling output
-                    command_listening_active_.store(true);
-
-                    // Check if output is currently enabled (indicates ongoing playback)
-                    bool output_was_enabled = codec_->output_enabled();
-                    ESP_LOGI("AudioService", "Output currently enabled: %d", output_was_enabled);
-
-                    // Clear the offline playback queue
-                    playback_msg dummy;
-                    int cleared_count = 0;
-                    while (xQueueReceive(playback_queue, &dummy, 0) == pdTRUE) {
-                        cleared_count++;
-                    }
-                    ESP_LOGI("AudioService", "Cleared %d queued playback commands", cleared_count);
-
-                    // Set abort flag if there was ongoing playback OR queued commands
-                    // This prevents the playback task from starting new playback
-                    if (cleared_count > 0 || output_was_enabled) {
-                        ESP_LOGI("AudioService", "Setting abort flag (cleared=%d, output_enabled=%d)",
-                                 cleared_count, output_was_enabled);
-                        abort_playback_.store(true);
-                        local_playback_active_.store(false);
-
-                        // Notify that playback stopped
-                        if (callbacks_.on_playback_change) {
-                            callbacks_.on_playback_change(false);
-                        }
-                    } else {
-                        ESP_LOGI("AudioService", "No active playback, abort flag NOT set");
-                    }
-
-                    // Clear audio decode/playback queues
-                    ResetDecoder();
-
-                    // Disable output
-                    codec_->EnableOutput(false);
-                    ESP_LOGI("AudioService", "Playback stopped, output disabled");
-                } else {
-                    // Clear command listening flag when exiting
-                    command_listening_active_.store(false);
-                    // Also clear abort flag when exiting command listening mode
-                    abort_playback_.store(false);
-                    ESP_LOGI("AudioService", "Command listening ended, abort flag cleared");
-                }
-
-                // Forward to application callback for display updates
-                ESP_LOGI("AudioService", "Forwarding to application callback");
-                if (callbacks_.on_command_listening_change) {
-                    callbacks_.on_command_listening_change(listening);
-                    ESP_LOGI("AudioService", "Application callback completed");
-                }
-
-                ESP_LOGI("AudioService", "Command listening callback returning");
-            });
-        }
     }
 }
 
