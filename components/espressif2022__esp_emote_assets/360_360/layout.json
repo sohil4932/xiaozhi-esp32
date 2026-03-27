@@ -70,6 +70,16 @@
     }
   },
   {
+    "type": "anim",
+    "name": "listen_anim",
+    "align": "GFX_ALIGN_BOTTOM_MID",
+    "x": 0,
+    "y": -25,
+    "anim": {
+      "mirror": "false"
+    }
+  },
+  {
     "type": "qrcode",
     "name": "qrcode",
     "align": "GFX_ALIGN_CENTER",
