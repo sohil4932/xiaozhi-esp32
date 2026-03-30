@@ -24,7 +24,6 @@
 
 #define TAG "Ota"
 
-
 Ota::Ota() {
 #ifdef ESP_EFUSE_BLOCK_USR_DATA
     // Read Serial Number from efuse user_data
@@ -266,6 +265,7 @@ void Ota::MarkCurrentVersionValid() {
 
 bool Ota::Upgrade(const std::string& firmware_url, std::function<void(int progress, size_t speed)> callback) {
     ESP_LOGI(TAG, "Upgrading firmware from %s", firmware_url.c_str());
+
     esp_ota_handle_t update_handle = 0;
     auto update_partition = esp_ota_get_next_update_partition(NULL);
     if (update_partition == NULL) {
@@ -306,6 +306,7 @@ bool Ota::Upgrade(const std::string& firmware_url, std::function<void(int progre
     size_t total_read = 0, recent_read = 0;
     auto last_calc_time = esp_timer_get_time();
     while (true) {
+
         int ret = http->Read(buffer + buffer_offset, PAGE_SIZE - buffer_offset);
         if (ret < 0) {
             ESP_LOGE(TAG, "Failed to read HTTP data: %s", esp_err_to_name(ret));
@@ -336,6 +337,7 @@ bool Ota::Upgrade(const std::string& firmware_url, std::function<void(int progre
                 if (esp_ota_begin(update_partition, OTA_WITH_SEQUENTIAL_WRITES, &update_handle)) {
                     esp_ota_abort(update_handle);
                     ESP_LOGE(TAG, "Failed to begin OTA");
+                    http->Close();
                     heap_caps_free(buffer);
                     return false;
                 }

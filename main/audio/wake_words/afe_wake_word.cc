@@ -1,6 +1,7 @@
 #include "afe_wake_word.h"
 #include "audio_service.h"
 #include <esp_log.h>
+#include <esp_heap_caps.h>
 #include <sstream>
 #include "esp_process_sdkconfig.h"
 
@@ -190,6 +191,16 @@ void AfeWakeWord::PreloadCommandModel(uint32_t delay_ms) {
     }
 
     multinet_preload_delay_ms_ = delay_ms;
+
+    constexpr size_t kMinInternalHeapForPreload = 12 * 1024;
+    size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (free_internal < kMinInternalHeapForPreload) {
+        ESP_LOGW(TAG, "Skip MultiNet preload: low internal heap (%u bytes)",
+                 static_cast<unsigned>(free_internal));
+        multinet_preloading_.store(false);
+        multinet_preload_task_ = nullptr;
+        return;
+    }
     auto preload_task = [](void* arg) {
         auto* this_ = static_cast<AfeWakeWord*>(arg);
         uint32_t delay = this_->multinet_preload_delay_ms_;

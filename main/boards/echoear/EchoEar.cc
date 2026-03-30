@@ -38,6 +38,15 @@
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 #include "touch_button_sensor.h"
+#include "ssid_manager.h"
+#include "wifi_manager.h"
+#include "settings.h"
+#include "ota.h"
+
+#ifdef CONFIG_USE_ESP_BLUFI_WIFI_PROVISIONING
+#include "blufi.h"
+#include <esp_bt.h>
+#endif
 
 #define TAG "EchoEar"
 #define TOUCH_SLIDER_ENABLED 1
@@ -48,6 +57,8 @@ constexpr float kOuterTouchThreshold = 0.015f;
 constexpr uint32_t kOuterTouchDebounceTimes = 2;
 constexpr int kTouchVolumeStep = 10;
 constexpr int64_t kTouchSwipeWindowMs = 250;
+constexpr int kWifiResetTapCount = 5;
+constexpr int64_t kWifiResetTapWindowMs = 2000;
 }  // namespace
 
 #ifdef IMU_INT_GPIO
@@ -786,6 +797,8 @@ private:
             return;
         }
 
+        int tap_count = 0;
+        int64_t last_tap_ms = 0;
         while (true) {
             if (touchpad->WaitForTouchEvent()) {
                 auto &app = Application::GetInstance();
@@ -795,6 +808,22 @@ private:
                 auto touch_event = touchpad->CheckTouchEvent();
 
                 if (touch_event == Cst816s::TOUCH_RELEASE) {
+                    const int64_t now_ms = esp_timer_get_time() / 1000;
+                    if (now_ms - last_tap_ms > kWifiResetTapWindowMs) {
+                        tap_count = 0;
+                    }
+                    last_tap_ms = now_ms;
+                    tap_count++;
+
+                    if (tap_count >= kWifiResetTapCount) {
+                        tap_count = 0;
+                        app.Schedule([]() {
+                            auto& board = static_cast<EchoEar&>(Board::GetInstance());
+                            board.ClearWifiCredentials();
+                        });
+                        continue;
+                    }
+
                     app.Schedule([]() {
                         auto& app = Application::GetInstance();
                         auto state = app.GetDeviceState();
@@ -907,6 +936,23 @@ private:
     {
         charge_ = new Charge(i2c_bus_, 0x55);
         xTaskCreatePinnedToCore(Charge::TaskFunction, "batterydecTask", 3 * 1024, charge_, 6, NULL, 0);
+    }
+
+    void ClearWifiCredentials()
+    {
+        ESP_LOGI(TAG, "Clearing WiFi credentials and entering config mode");
+        Settings settings("wifi", true);
+        settings.EraseAll();
+        if (auto* display = GetDisplay(); display != nullptr) {
+            display->ShowNotification("Wi-Fi credentials cleared");
+        }
+        // Force config mode regardless of current device state.
+        esp_timer_stop(connect_timer_);
+        WifiManager::GetInstance().StopStation();
+#ifdef CONFIG_USE_ESP_BLUFI_WIFI_PROVISIONING
+        Blufi::GetInstance().deinit();
+#endif
+        StartWifiConfigMode();
     }
 
     void InitializeCst816sTouchPad()

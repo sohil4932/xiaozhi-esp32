@@ -7,6 +7,7 @@
 #include <tuple>
 #include <algorithm>
 #include <cinttypes>
+#include <atomic>
 
 // Standard C headers
 #include <sys/time.h>
@@ -14,6 +15,7 @@
 
 // ESP-IDF headers
 #include <esp_log.h>
+#include <esp_err.h>
 #include <esp_lcd_panel_io.h>
 #include <esp_timer.h>
 #include <lvgl.h>
@@ -48,11 +50,14 @@ class EmoteDisplay;
 // Helper Functions
 // ============================================================================
 
+static std::atomic<bool> s_flush_in_progress{false};
+
 static bool OnFlushIoReady(const esp_lcd_panel_io_handle_t panel_io,
     esp_lcd_panel_io_event_data_t* const edata, void* user_ctx)
 {
     emote_handle_t handle = static_cast<emote_handle_t>(user_ctx);
     if (handle) {
+        s_flush_in_progress.store(false);   // clear the guard
         emote_notify_flush_finished(handle);
     }
     return true;
@@ -62,8 +67,25 @@ static bool OnFlushIoReady(const esp_lcd_panel_io_handle_t panel_io,
 static void OnFlushCallback(int x_start, int y_start, int x_end, int y_end, const void* data, emote_handle_t handle)
 {
     esp_lcd_panel_handle_t panel = (esp_lcd_panel_handle_t)emote_get_user_data(handle);
-    if (panel != nullptr) {
-        esp_lcd_panel_draw_bitmap(panel, x_start, y_start, x_end, y_end, data);
+    if (panel == nullptr) {
+        ESP_LOGE(TAG, "LCD flush skipped: panel handle is null");
+        s_flush_in_progress.store(false);
+        // Avoid deadlock in gfx_render: signal flush completion even on error.
+        emote_notify_flush_finished(handle);
+        return;
+    }
+
+    if (s_flush_in_progress.exchange(true)) {
+        ESP_LOGW(TAG, "Flush skipped -- previous flush still in flight");
+        emote_notify_flush_finished(handle);
+        return;
+    }
+
+    esp_err_t err = esp_lcd_panel_draw_bitmap(panel, x_start, y_start, x_end, y_end, data);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "LCD flush error: %s", esp_err_to_name(err));
+        s_flush_in_progress.store(false);
+        emote_notify_flush_finished(handle);
     }
 }
 
@@ -82,7 +104,9 @@ static emote_handle_t InitializeEmote(const esp_lcd_panel_handle_t panel, const 
         .flags = {
             .swap = true,
             .double_buffer = true,
-            .buff_dma = false,
+            // SPI/QSPI panel IO expects DMA-capable buffers to avoid flush errors.
+            .buff_dma = true,
+            .buff_spiram = false,
         },
         .gfx_emote = {
             .h_res = width,
@@ -90,7 +114,7 @@ static emote_handle_t InitializeEmote(const esp_lcd_panel_handle_t panel, const 
             .fps = 30,
         },
         .buffers = {
-            .buf_pixels = static_cast<size_t>(width * 16),
+            .buf_pixels = static_cast<size_t>(width * 8),
         },
         .task = {
             .task_priority = 5,
