@@ -19,6 +19,7 @@ public:
     virtual void SetChatMessage(const char* role, const char* content) override;
     virtual void SetTheme(Theme* theme) override;
     virtual void ShowNotification(const char* notification, int duration_ms = 3000) override;
+    virtual void ShowQRCode(const char* qrcode_text, const char* caption = nullptr, int duration_ms = 30000) override;
     virtual void UpdateStatusBar(bool update_all = false) override;
     virtual void SetPowerSaveMode(bool on) override;
     virtual void SetPreviewImage(const void* image);
@@ -27,9 +28,6 @@ public:
     bool InsertAnimDialog(const char* emoji_name, uint32_t duration_ms);
 
     void RefreshAll();
-
-    // Lightweight emote event trigger for offline mode (bypasses CLOCK_LABEL updates)
-    void TriggerEmoteEvent(const char* event_type);
 
     // Get emote handle for internal use
     emote_handle_t GetEmoteHandle() const { return emote_handle_; }

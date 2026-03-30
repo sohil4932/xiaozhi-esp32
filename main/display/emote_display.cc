@@ -218,23 +218,53 @@ void EmoteDisplay::ShowNotification(const char* notification, int duration_ms)
     esp_timer_start_once(notification_timer_, (uint64_t)duration_ms * 1000);
 }
 
-void EmoteDisplay::TriggerEmoteEvent(const char* event_type)
+void EmoteDisplay::ShowQRCode(const char* qrcode_text, const char* caption, int duration_ms)
 {
-    if (!emote_handle_ || !event_type) {
+    ESP_LOGI(TAG, "ShowQRCode: %s", qrcode_text ? qrcode_text : "(null)");
+
+    // Stop any pending clear timer
+    if (notification_timer_) {
+        esp_timer_stop(notification_timer_);
+        esp_timer_delete(notification_timer_);
+        notification_timer_ = nullptr;
+    }
+
+    if (!emote_handle_) {
         return;
     }
 
-    ESP_LOGI(TAG, "TriggerEmoteEvent: %s", event_type);
-
-    // Only trigger emote events, no CLOCK_LABEL updates
-    // This is lightweight and doesn't cause SPI queue overflow
-    if (std::strcmp(event_type, "LISTEN") == 0) {
-        emote_set_event_msg(emote_handle_, EMOTE_MGR_EVT_LISTEN, NULL);
-    } else if (std::strcmp(event_type, "SPEAK") == 0) {
-        emote_set_event_msg(emote_handle_, EMOTE_MGR_EVT_SPEAK, NULL);
-    } else if (std::strcmp(event_type, "IDLE") == 0) {
-        emote_set_event_msg(emote_handle_, EMOTE_MGR_EVT_IDLE, NULL);
+    if (!qrcode_text || strlen(qrcode_text) == 0) {
+        emote_set_event_msg(emote_handle_, EMOTE_MGR_EVT_IDLE, nullptr);
+        return;
     }
+
+    const char* label = (caption && strlen(caption) > 0) ? caption : qrcode_text;
+    emote_set_event_msg(emote_handle_, EMOTE_MGR_EVT_QRCODE, label);
+
+    if (emote_set_qrcode_data(emote_handle_, qrcode_text) != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to set QR code data");
+    }
+
+    if (duration_ms <= 0) {
+        return;
+    }
+
+    // Start a one-shot timer to clear the QR code after duration_ms
+    esp_timer_create_args_t timer_args = {
+        .callback = [](void* arg) {
+            auto* self = static_cast<EmoteDisplay*>(arg);
+            // Return to idle state — clears text and hides status icon/QR
+            emote_set_event_msg(self->emote_handle_, EMOTE_MGR_EVT_IDLE, nullptr);
+            esp_timer_delete(self->notification_timer_);
+            self->notification_timer_ = nullptr;
+        },
+        .arg = this,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "qr_timer",
+        .skip_unhandled_events = true,
+    };
+    esp_timer_create(&timer_args, &notification_timer_);
+    esp_timer_start_once(notification_timer_, (uint64_t)duration_ms * 1000);
 }
 
 void EmoteDisplay::UpdateStatusBar(bool update_all)

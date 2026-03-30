@@ -33,6 +33,7 @@ public:
     virtual void SetStatus(const char* status);
     virtual void ShowNotification(const char* notification, int duration_ms = 3000);
     virtual void ShowNotification(const std::string &notification, int duration_ms = 3000);
+    virtual void ShowQRCode(const char* qrcode_text, const char* caption = nullptr, int duration_ms = 30000);
     virtual void SetEmotion(const char* emotion);
     virtual void SetChatMessage(const char* role, const char* content);
     virtual void ShowMicIcon(bool show) {}

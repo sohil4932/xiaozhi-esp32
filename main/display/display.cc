@@ -32,6 +32,12 @@ void Display::ShowNotification(const char* notification, int duration_ms) {
     ESP_LOGW(TAG, "ShowNotification: %s", notification);
 }
 
+void Display::ShowQRCode(const char* qrcode_text, const char* caption, int duration_ms) {
+    ESP_LOGW(TAG, "ShowQRCode: %s", qrcode_text ? qrcode_text : "(null)");
+    (void)caption;
+    (void)duration_ms;
+}
+
 void Display::UpdateStatusBar(bool update_all) {
 }
 
