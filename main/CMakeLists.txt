@@ -252,6 +252,10 @@ elseif(CONFIG_BOARD_TYPE_ECHOEAR)
     set(BUILTIN_TEXT_FONT font_puhui_20_4)
     set(BUILTIN_ICON_FONT font_awesome_20_4)
     set(DEFAULT_EMOJI_COLLECTION twemoji_64)
+    set(DEFAULT_ASSETS_EXTRA_FILES "${PROJECT_DIR}/scripts/spiffs_assets/extra/echoear")
+    set(BOOT_OGG_SRC "${PROJECT_DIR}/scripts/sdcard/boot.ogg")
+    set(BOOT_OGG_DST "${DEFAULT_ASSETS_EXTRA_FILES}/boot.ogg")
+    set(EMOTE_EXTRA_FILES "${PROJECT_DIR}/scripts/sdcard/boot.ogg")
     set(EMOTE_RESOLUTION "360_360")
     # set(EMOTE_EXTERNAL_PATH "${CMAKE_CURRENT_SOURCE_DIR}/boards/echoear/assets")
 elseif(CONFIG_BOARD_TYPE_ESP_SENSAIRSHUTTLE)
@@ -965,6 +969,19 @@ endif()
 
 # Function to build default assets based on configuration
 function(build_default_assets_bin)
+    set(ASSETS_EXTRA_DEPENDS "")
+    if(BOOT_OGG_SRC AND BOOT_OGG_DST)
+        add_custom_command(
+            OUTPUT ${BOOT_OGG_DST}
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${DEFAULT_ASSETS_EXTRA_FILES}
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${BOOT_OGG_SRC} ${BOOT_OGG_DST}
+            DEPENDS ${BOOT_OGG_SRC}
+            COMMENT "Syncing boot.ogg into assets extra files"
+            VERBATIM
+        )
+        list(APPEND ASSETS_EXTRA_DEPENDS ${BOOT_OGG_DST})
+    endif()
+
     # Set output path for generated assets.bin
     set(GENERATED_ASSETS_BIN "${CMAKE_BINARY_DIR}/generated_assets.bin")
     
@@ -999,6 +1016,7 @@ function(build_default_assets_bin)
         DEPENDS
             ${SDKCONFIG}
             ${PROJECT_DIR}/scripts/build_default_assets.py
+            ${ASSETS_EXTRA_DEPENDS}
         COMMENT "Building default assets.bin based on configuration"
         VERBATIM
     )
@@ -1090,7 +1108,15 @@ if ("${size}" AND "${offset}")
         set(ASSETS_PARTITION "assets")
         set(ASSETS_FILE "${CMAKE_BINARY_DIR}/${ASSETS_NAME}.bin")
 
-        build_speaker_assets_bin("${ASSETS_PARTITION}" ${EMOTE_RESOLUTION} ${ASSETS_FILE} ${CONFIG_MMAP_FILE_NAME_LENGTH})
+        if(EMOTE_EXTERNAL_PATH AND EMOTE_EXTRA_FILES)
+            build_speaker_assets_bin("${ASSETS_PARTITION}" ${EMOTE_RESOLUTION} ${ASSETS_FILE} ${CONFIG_MMAP_FILE_NAME_LENGTH} ${EMOTE_EXTERNAL_PATH} ${EMOTE_EXTRA_FILES})
+        elseif(EMOTE_EXTERNAL_PATH)
+            build_speaker_assets_bin("${ASSETS_PARTITION}" ${EMOTE_RESOLUTION} ${ASSETS_FILE} ${CONFIG_MMAP_FILE_NAME_LENGTH} ${EMOTE_EXTERNAL_PATH})
+        elseif(EMOTE_EXTRA_FILES)
+            build_speaker_assets_bin("${ASSETS_PARTITION}" ${EMOTE_RESOLUTION} ${ASSETS_FILE} ${CONFIG_MMAP_FILE_NAME_LENGTH} "" ${EMOTE_EXTRA_FILES})
+        else()
+            build_speaker_assets_bin("${ASSETS_PARTITION}" ${EMOTE_RESOLUTION} ${ASSETS_FILE} ${CONFIG_MMAP_FILE_NAME_LENGTH})
+        endif()
         message(STATUS "Generated emote assets: ${ASSETS_FILE} -> ${ASSETS_PARTITION} partition")
         esptool_py_flash_to_partition(flash "${ASSETS_PARTITION}" "${ASSETS_FILE}")
     elseif(CONFIG_FLASH_NONE_ASSETS)

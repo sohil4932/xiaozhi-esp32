@@ -70,8 +70,18 @@ function(build_speaker_assets_bin partition_name resolution output_path)
     endif()
     
     # Check if external_path is provided (5th argument)
-    if(ARGC GREATER 4)
+    if(ARGC GREATER 4 AND NOT "${ARGV4}" STREQUAL "")
         list(APPEND BUILD_ARGS "--external_path" "${ARGV4}")
+    endif()
+
+    # Check if extra_files is provided (6th argument)
+    if(ARGC GREATER 5 AND NOT "${ARGV5}" STREQUAL "")
+        list(APPEND BUILD_ARGS "--extra_files" "${ARGV5}")
+    endif()
+
+    set(EXTRA_DEPENDS "")
+    if(ARGC GREATER 5 AND NOT "${ARGV5}" STREQUAL "")
+        list(APPEND EXTRA_DEPENDS ${ARGV5})
     endif()
 
     # Create custom command to build assets
@@ -80,6 +90,9 @@ function(build_speaker_assets_bin partition_name resolution output_path)
         COMMAND python ${component_path}/scripts/spiffs_assets/build_all.py ${BUILD_ARGS}
         DEPENDS
             ${component_path}/scripts/spiffs_assets/build_all.py
+            ${component_path}/scripts/spiffs_assets/build.py
+            ${component_path}/scripts/spiffs_assets/spiffs_assets_gen.py
+            ${EXTRA_DEPENDS}
         COMMENT "Building emote_assets.bin based on configuration"
         VERBATIM
     )

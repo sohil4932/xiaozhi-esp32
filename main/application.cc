@@ -91,6 +91,19 @@ void Application::Initialize() {
         assets.Apply();
     }
 
+    // Play boot sound from assets partition (SPIFFS subtype)
+    if (assets.partition_valid()) {
+        void* ptr = nullptr;
+        size_t size = 0;
+        if (assets.GetAssetData("boot.ogg", ptr, size)) {
+            ESP_LOGI(TAG, "Playing boot sound from assets (%zu bytes)", size);
+            std::string_view audio_view(static_cast<const char*>(ptr), size);
+            audio_service_.PlaySound(audio_view);
+        } else {
+            ESP_LOGI(TAG, "boot.ogg not found in assets");
+        }
+    }
+
     // Enable offline mode for SD card command playback (if SD card is available)
     auto* sd = board.GetSDCard();
     if (sd && sd->IsMounted()) {
@@ -101,16 +114,6 @@ void Application::Initialize() {
         ESP_LOGI(TAG, "SD card available, but offline mode is disabled by config");
 #endif
 
-        // Play boot sound from SD card
-        std::vector<uint8_t> boot_audio;
-        esp_err_t ret = sd->ReadFile("/sdcard/boot.ogg", boot_audio);
-        if (ret == ESP_OK && !boot_audio.empty()) {
-            ESP_LOGI(TAG, "Playing boot sound from SD card (%zu bytes)", boot_audio.size());
-            std::string_view audio_view(reinterpret_cast<const char*>(boot_audio.data()), boot_audio.size());
-            audio_service_.PlaySound(audio_view);
-        } else {
-            ESP_LOGI(TAG, "Boot sound not found on SD card, skipping");
-        }
     } else {
         ESP_LOGI(TAG, "SD card not available, offline command mode disabled");
     }
@@ -157,6 +160,7 @@ void Application::Initialize() {
         switch (event) {
             case NetworkEvent::Scanning:
                 display->ShowNotification(Lang::Strings::SCANNING_WIFI, 30000);
+                display->ShowQRCode(Lang::Strings::SCANNING_WIFI, Lang::Strings::SCANNING_WIFI, 30000);
                 xEventGroupSetBits(event_group_, MAIN_EVENT_NETWORK_DISCONNECTED);
                 break;
             case NetworkEvent::Connecting: {

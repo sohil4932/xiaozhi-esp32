@@ -77,6 +77,32 @@ def process_wakenet_model(wakenet_model_file, assets_dir):
     return wakenet_filename
 
 
+def process_extra_files(extra_files_path, assets_dir):
+    """Process extra files (single file or directory)"""
+    if not extra_files_path:
+        return
+
+    if os.path.isfile(extra_files_path):
+        filename = os.path.basename(extra_files_path)
+        copy_file(extra_files_path, os.path.join(assets_dir, filename))
+        print(f"Handle extra file: {filename}")
+        return
+
+    if os.path.isdir(extra_files_path):
+        copied = 0
+        for root, dirs, files in os.walk(extra_files_path):
+            for file in files:
+                if file.startswith('.'):
+                    continue
+                src_file = os.path.join(root, file)
+                copy_file(src_file, os.path.join(assets_dir, file))
+                copied += 1
+        print(f"Handle extra files: {copied} files from {extra_files_path}")
+        return
+
+    print(f"Warning: Extra files path not found: {extra_files_path}")
+
+
 def load_emoji_config(emoji_collection_dir):
     """Load emoji config from config.json file"""
     config_path = os.path.join(emoji_collection_dir, "emote.json")
@@ -260,7 +286,7 @@ def generate_config_json(build_dir, assets_dir, name_length="32"):
     config_data = {
         "assets_path": os.path.join(build_dir, "assets"),
         "image_file": os.path.join(build_dir, "output/assets.bin"),
-        "support_format": ".png, .gif, .jpg, .bin, .json, .eaf",
+        "support_format": ".png, .gif, .jpg, .bin, .json, .eaf, .ogg",
         "name_length": name_length,
     }
     
@@ -280,6 +306,7 @@ def main():
     parser.add_argument('--resolution', help='Path to resolution directory')
     parser.add_argument('--name_length', default="32", help='Name length for assets (default: 32)')
     parser.add_argument('--wakenet_model', help='Path to wakenet model file')
+    parser.add_argument('--extra_files', help='Extra file or directory to include in assets (optional)')
     
     args = parser.parse_args()
     
@@ -301,6 +328,7 @@ def main():
     # Process each parameter
     text_font = process_text_font(args.text_font, assets_dir)
     wakenet_model = process_wakenet_model(args.wakenet_model, assets_dir)
+    process_extra_files(args.extra_files, assets_dir)
 
     if(args.resolution):
         emoji_collection, icon_collection, layout_json = process_board_collection(args.resolution, args.res_path, assets_dir)

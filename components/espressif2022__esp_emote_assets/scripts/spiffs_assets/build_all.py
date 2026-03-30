@@ -95,7 +95,7 @@ def find_path_in_bases(*path_parts, external_base=None, local_base=None):
     return local_path
 
 
-def build_assets(text_font, resolution_name, emoji_collection, wakenet_model=None, build_dir=None, final_dir=None, output_filename=None, name_length=None, external_base=None):
+def build_assets(text_font, resolution_name, emoji_collection, wakenet_model=None, build_dir=None, final_dir=None, output_filename=None, name_length=None, external_base=None, extra_files=None):
     """Build assets.bin using build.py with given parameters"""
     
     # Prepare arguments for build.py
@@ -133,6 +133,9 @@ def build_assets(text_font, resolution_name, emoji_collection, wakenet_model=Non
 
     if name_length:
         cmd.extend(["--name_length", name_length])
+
+    if extra_files:
+        cmd.extend(["--extra_files", extra_files])
     
     # Prepare display info
     display_info = f"{resolution_name}_{text_font}_{emoji_collection}_{wakenet_model}"
@@ -201,6 +204,7 @@ def main():
     parser.add_argument('--output', help='Output file path for generated .bin file (default: build/final/{resolution}_{font}_{emoji}.bin)')
     parser.add_argument('--name_length', help='Name length for assets (optional, default: "32")')
     parser.add_argument('--external_path', help='External base path prefix for finding resources (default: use local paths only). Searches external path first, then falls back to local.')
+    parser.add_argument('--extra_files', help='Extra file or directory to include in assets (optional).')
     args = parser.parse_args()
     
     # Get external base path if provided
@@ -218,6 +222,7 @@ def main():
     print(f"  Output: {args.output if args.output else 'default (build/final/{{resolution}}.bin)'}")
     print(f"  Name Length: {args.name_length if args.name_length else '32'}")
     print(f"  External Path: {external_base if external_base else 'None (using local paths only)'}")
+    print(f"  Extra Files: {args.extra_files if args.extra_files else 'None'}")
     
     # Use command line resolutions or default
     resolutions = args.resolution if args.resolution else [
@@ -261,7 +266,7 @@ def main():
         
         total_combinations += 1
         
-        if build_assets(text_font, resolution_name, emoji_collection, wakenet_model, build_dir, final_dir, output_filename, args.name_length, external_base):
+        if build_assets(text_font, resolution_name, emoji_collection, wakenet_model, build_dir, final_dir, output_filename, args.name_length, external_base, args.extra_files):
             successful_builds += 1
     
     print(f"Completed! Builds: {successful_builds}/{total_combinations}")
