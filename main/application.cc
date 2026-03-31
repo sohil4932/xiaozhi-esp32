@@ -73,10 +73,8 @@ void Application::Initialize() {
     auto display = board.GetDisplay();
     display->SetupUI();
 
-    // Set initial emotion to neutral (idle state)
+    // Show eyes normally during boot/scanning - QR code only appears when BluFi starts
     display->SetEmotion("neutral");
-
-    // Print board name/version info (will be cleared later in WiFiConfiguring state)
     display->SetChatMessage("system", SystemInfo::GetUserAgent().c_str());
 
     // Setup the audio service
@@ -84,14 +82,14 @@ void Application::Initialize() {
     audio_service_.Initialize(codec);
     audio_service_.Start();
 
-    // Load assets early for offline mode (SR models + emote animations)
+    // Load assets (SR models + emote animations)
     auto& assets = Assets::GetInstance();
     if (assets.partition_valid()) {
-        ESP_LOGI(TAG, "Loading assets for offline mode");
+        ESP_LOGI(TAG, "Loading assets");
         assets.Apply();
     }
 
-    // Play boot sound from assets partition (SPIFFS subtype)
+    // Play boot sound from assets partition
     if (assets.partition_valid()) {
         void* ptr = nullptr;
         size_t size = 0;
@@ -102,20 +100,6 @@ void Application::Initialize() {
         } else {
             ESP_LOGI(TAG, "boot.ogg not found in assets");
         }
-    }
-
-    // Enable offline mode for SD card command playback (if SD card is available)
-    auto* sd = board.GetSDCard();
-    if (sd && sd->IsMounted()) {
-#if CONFIG_ENABLE_OFFLINE_MODE
-        ESP_LOGI(TAG, "SD card available, enabling offline command mode");
-        audio_service_.SetOfflineModeEnabled(true);
-#else
-        ESP_LOGI(TAG, "SD card available, but offline mode is disabled by config");
-#endif
-
-    } else {
-        ESP_LOGI(TAG, "SD card not available, offline command mode disabled");
     }
 
     AudioServiceCallbacks callbacks;
@@ -130,7 +114,12 @@ void Application::Initialize() {
     };
     callbacks.on_playback_change = [this](bool playing) {
         ESP_LOGI("Application", "Playback change: playing=%d", playing);
-        Schedule([playing]() {
+        Schedule([this, playing]() {
+            auto state = GetDeviceState();
+            // Don't update display during WifiConfiguring - QR code is shown
+            if (state == kDeviceStateWifiConfiguring) {
+                return;
+            }
             auto& board = Board::GetInstance();
             auto display = board.GetDisplay();
             if (display) {
@@ -159,8 +148,7 @@ void Application::Initialize() {
 
         switch (event) {
             case NetworkEvent::Scanning:
-                display->ShowNotification(Lang::Strings::SCANNING_WIFI, 30000);
-                display->ShowQRCode(Lang::Strings::SCANNING_WIFI, Lang::Strings::SCANNING_WIFI, 30000);
+                display->ShowNotification(Lang::Strings::SCANNING_WIFI, 0);
                 xEventGroupSetBits(event_group_, MAIN_EVENT_NETWORK_DISCONNECTED);
                 break;
             case NetworkEvent::Connecting: {
@@ -746,12 +734,7 @@ void Application::HandleToggleChatEvent() {
         SetDeviceState(kDeviceStateIdle);
         return;
     } else if (state == kDeviceStateWifiConfiguring) {
-        audio_service_.EnableAudioTesting(true);
-        SetDeviceState(kDeviceStateAudioTesting);
-        return;
-    } else if (state == kDeviceStateAudioTesting) {
-        audio_service_.EnableAudioTesting(false);
-        SetDeviceState(kDeviceStateWifiConfiguring);
+        // No action in WiFi configuring - waiting for WiFi connection via BluFi
         return;
     }
 
@@ -800,8 +783,7 @@ void Application::HandleStartListeningEvent() {
         SetDeviceState(kDeviceStateIdle);
         return;
     } else if (state == kDeviceStateWifiConfiguring) {
-        audio_service_.EnableAudioTesting(true);
-        SetDeviceState(kDeviceStateAudioTesting);
+        // No action in WiFi configuring - waiting for WiFi connection via BluFi
         return;
     }
 
@@ -996,54 +978,9 @@ void Application::HandleStateChangedEvent() {
             audio_service_.ResetDecoder();
             break;
         case kDeviceStateWifiConfiguring:
-            // Enable offline mode for screen-tap triggered offline commands (BlueFi + offline commands in parallel)
-            // In offline mode: AFE will start only when user taps screen to listen for commands
-            // In online mode: AFE runs continuously for audio processing (no wake word, just audio to server)
-            
-            // Set display first
-            display->SetChatMessage("system", "");  // Clear the init message
-            display->SetStatus(Lang::Strings::STANDBY);
-            display->SetEmotion("happy");  // Show happy eyes during WiFi setup
-
-            // Delay audio initialization by 500ms to allow emotion display to render
-            // This matches the timing gap in online mode (470ms) where emotions render successfully
-            {
-                // Pre-enable codec input NOW to allocate DMA buffers while memory is available
-                // This prevents DMA allocation failure when audio starts later
-                auto codec = board.GetAudioCodec();
-                if (!codec->input_enabled()) {
-                    codec->EnableInput(true);
-                }
-
-                static esp_timer_handle_t audio_start_timer = nullptr;
-
-                // Cancel any existing timer first
-                if (audio_start_timer) {
-                    esp_timer_stop(audio_start_timer);
-                    esp_timer_delete(audio_start_timer);
-                    audio_start_timer = nullptr;
-                }
-
-                // Create timer with lambda callback
-                esp_timer_create_args_t timer_args = {
-                    .callback = [](void* arg) {
-                        Application* app = static_cast<Application*>(arg);
-                        app->Schedule([app]() {
-#if CONFIG_ENABLE_OFFLINE_MODE
-                            app->audio_service_.SetOfflineModeEnabled(true);
-#endif
-                            app->audio_service_.EnableWakeWordDetection(true);
-                        });
-                    },
-                    .arg = this,
-                    .dispatch_method = ESP_TIMER_TASK,
-                    .name = "audio_start",
-                    .skip_unhandled_events = false
-                };
-
-                esp_timer_create(&timer_args, &audio_start_timer);
-                esp_timer_start_once(audio_start_timer, 500000);  // 500ms in microseconds
-            }
+            // No offline mode - show QR code with BluFi info and wait for WiFi
+            display->ShowQRCode("NOKO-Blufi", "Connect to WiFi using Noko App", 0);  // 0 = permanent until state changes
+            display->SetStatus(Lang::Strings::WIFI_CONFIG_MODE);
             break;
         default:
             // Do nothing

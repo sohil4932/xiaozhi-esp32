@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cstring>
 #include <string>
+#include "system_info.h"
 #include <vector>
 #include "esp_bt.h"
 #include "esp_event.h"
@@ -875,6 +876,17 @@ void Blufi::_handle_event(esp_blufi_cb_event_t event, esp_blufi_cb_param_t* para
                 vTaskDelay(pdMS_TO_TICKS(500));
             }
             _send_wifi_list();
+            break;
+        }
+        case ESP_BLUFI_EVENT_RECV_CUSTOM_DATA: {
+            ESP_LOGI(BLUFI_TAG, "Recv custom data, len: %" PRIu32, param->custom_data.data_len);
+            // Respond to "get_mac" request with WiFi STA MAC (sent after security negotiation)
+            if (param->custom_data.data_len >= 7 &&
+                memcmp(param->custom_data.data, "get_mac", 7) == 0) {
+                std::string mac_data = "MAC:" + SystemInfo::GetMacAddress();
+                esp_blufi_send_custom_data((uint8_t*)mac_data.data(), mac_data.size());
+                ESP_LOGI(BLUFI_TAG, "Sent device MAC to app: %s", mac_data.c_str());
+            }
             break;
         }
         default:

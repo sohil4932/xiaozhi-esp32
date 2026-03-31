@@ -144,6 +144,11 @@ void EmoteDisplay::SetEmotion(const char* const emotion)
     if (!emote_handle_ || !emotion || strlen(emotion) == 0) {
         return;
     }
+    // Restore eye animation visibility (may have been hidden by ShowQRCode)
+    gfx_obj_t* eye_obj = emote_get_obj_by_name(emote_handle_, EMT_DEF_ELEM_EYE_ANIM);
+    if (eye_obj) {
+        gfx_obj_set_visible(eye_obj, true);
+    }
     emote_set_anim_emoji(emote_handle_, emotion);
 }
 
@@ -236,6 +241,12 @@ void EmoteDisplay::ShowQRCode(const char* qrcode_text, const char* caption, int 
     if (!qrcode_text || strlen(qrcode_text) == 0) {
         emote_set_event_msg(emote_handle_, EMOTE_MGR_EVT_IDLE, nullptr);
         return;
+    }
+
+    // Hide eye animation so only QR code is visible
+    gfx_obj_t* eye_obj = emote_get_obj_by_name(emote_handle_, EMT_DEF_ELEM_EYE_ANIM);
+    if (eye_obj) {
+        gfx_obj_set_visible(eye_obj, false);
     }
 
     const char* label = (caption && strlen(caption) > 0) ? caption : qrcode_text;
