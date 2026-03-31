@@ -117,7 +117,7 @@ void Application::Initialize() {
         Schedule([this, playing]() {
             auto state = GetDeviceState();
             // Don't update display during WifiConfiguring - QR code is shown
-            if (state == kDeviceStateWifiConfiguring) {
+            if (state == kDeviceStateWifiConfiguring || state == kDeviceStateStarting) {
                 return;
             }
             auto& board = Board::GetInstance();
@@ -172,10 +172,11 @@ void Application::Initialize() {
                 break;
             }
             case NetworkEvent::Disconnected:
+                display->ShowNotification(Lang::Strings::SCANNING_WIFI, 0);
                 xEventGroupSetBits(event_group_, MAIN_EVENT_NETWORK_DISCONNECTED);
                 break;
             case NetworkEvent::WifiConfigModeEnter:
-                // WiFi config mode enter is handled by WifiBoard internally
+                SetDeviceState(kDeviceStateWifiConfiguring);
                 break;
             case NetworkEvent::WifiConfigModeExit:
                 // WiFi config mode exit is handled by WifiBoard internally
@@ -304,6 +305,13 @@ void Application::Run() {
 
 void Application::HandleNetworkConnectedEvent() {
     ESP_LOGI(TAG, "Network connected");
+
+    if (wifi_reconnect_timer_) {
+        esp_timer_stop(wifi_reconnect_timer_);
+        esp_timer_delete(wifi_reconnect_timer_);
+        wifi_reconnect_timer_ = nullptr;
+    }
+
     auto state = GetDeviceState();
 
     if (state == kDeviceStateStarting || state == kDeviceStateWifiConfiguring) {
@@ -333,6 +341,31 @@ void Application::HandleNetworkDisconnectedEvent() {
     if (state == kDeviceStateConnecting || state == kDeviceStateListening || state == kDeviceStateSpeaking) {
         ESP_LOGI(TAG, "Closing audio channel due to network disconnection");
         protocol_->CloseAudioChannel();
+    }
+
+    // After 5 reconnects (~12s) + 3 scans at 10s/20s/40s (~74s)
+    // fall back to QR code config mode so user can re-provision
+    if (state != kDeviceStateWifiConfiguring && state != kDeviceStateStarting) {
+        if (wifi_reconnect_timer_) {
+            esp_timer_stop(wifi_reconnect_timer_);
+            esp_timer_delete(wifi_reconnect_timer_);
+            wifi_reconnect_timer_ = nullptr;
+        }
+        esp_timer_create_args_t timer_args = {
+            .callback = [](void* arg) {
+                Application* app = static_cast<Application*>(arg);
+                ESP_LOGI("Application", "WiFi reconnect timeout - showing QR code");
+                esp_timer_delete(app->wifi_reconnect_timer_);
+                app->wifi_reconnect_timer_ = nullptr;
+                app->SetDeviceState(kDeviceStateWifiConfiguring);
+            },
+            .arg = this,
+            .dispatch_method = ESP_TIMER_TASK,
+            .name = "wifi_reconnect",
+            .skip_unhandled_events = true,
+        };
+        esp_timer_create(&timer_args, &wifi_reconnect_timer_);
+        esp_timer_start_once(wifi_reconnect_timer_, 70ULL * 1000 * 1000); 
     }
 
     // Update the status bar immediately to show the network state
@@ -914,6 +947,7 @@ void Application::HandleStateChangedEvent() {
     switch (new_state) {
         case kDeviceStateUnknown:
         case kDeviceStateIdle:
+            display->ShowQRCode("", nullptr, 0);  
             display->SetStatus(Lang::Strings::STANDBY);
             display->ClearChatMessages();  // Clear messages first
             display->SetEmotion("neutral"); // Then set emotion (wechat mode checks child count)

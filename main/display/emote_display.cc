@@ -144,10 +144,8 @@ void EmoteDisplay::SetEmotion(const char* const emotion)
     if (!emote_handle_ || !emotion || strlen(emotion) == 0) {
         return;
     }
-    // Restore eye animation visibility (may have been hidden by ShowQRCode)
-    gfx_obj_t* eye_obj = emote_get_obj_by_name(emote_handle_, EMT_DEF_ELEM_EYE_ANIM);
-    if (eye_obj) {
-        gfx_obj_set_visible(eye_obj, true);
+    if (qrcode_active_) {
+        return;
     }
     emote_set_anim_emoji(emote_handle_, emotion);
 }
@@ -205,6 +203,10 @@ void EmoteDisplay::ShowNotification(const char* notification, int duration_ms)
 
     emote_set_event_msg(emote_handle_, EMOTE_MGR_EVT_SYS, notification);
 
+    if (duration_ms <= 0) {
+        return;  // Permanent notification, no auto-clear
+    }
+
     // Start a one-shot timer to clear the notification after duration_ms
     esp_timer_create_args_t timer_args = {
         .callback = [](void* arg) {
@@ -239,16 +241,11 @@ void EmoteDisplay::ShowQRCode(const char* qrcode_text, const char* caption, int 
     }
 
     if (!qrcode_text || strlen(qrcode_text) == 0) {
+        qrcode_active_ = false;
         emote_set_event_msg(emote_handle_, EMOTE_MGR_EVT_IDLE, nullptr);
         return;
     }
-
-    // Hide eye animation so only QR code is visible
-    gfx_obj_t* eye_obj = emote_get_obj_by_name(emote_handle_, EMT_DEF_ELEM_EYE_ANIM);
-    if (eye_obj) {
-        gfx_obj_set_visible(eye_obj, false);
-    }
-
+    qrcode_active_ = true;
     const char* label = (caption && strlen(caption) > 0) ? caption : qrcode_text;
     emote_set_event_msg(emote_handle_, EMOTE_MGR_EVT_QRCODE, label);
 
@@ -264,7 +261,7 @@ void EmoteDisplay::ShowQRCode(const char* qrcode_text, const char* caption, int 
     esp_timer_create_args_t timer_args = {
         .callback = [](void* arg) {
             auto* self = static_cast<EmoteDisplay*>(arg);
-            // Return to idle state — clears text and hides status icon/QR
+            self->qrcode_active_ = false;
             emote_set_event_msg(self->emote_handle_, EMOTE_MGR_EVT_IDLE, nullptr);
             esp_timer_delete(self->notification_timer_);
             self->notification_timer_ = nullptr;
