@@ -343,8 +343,8 @@ void Application::HandleNetworkDisconnectedEvent() {
         protocol_->CloseAudioChannel();
     }
 
-    // After 5 reconnects (~12s) + 3 scans at 10s/20s/40s (~74s)
-    // fall back to QR code config mode so user can re-provision
+    // After 5 reconnects + 3 scans , reboot to enter WiFi config mode cleanly.
+    // BLE cannot re-initialize at runtime due to insufficient SRAM, so restart
     if (state != kDeviceStateWifiConfiguring && state != kDeviceStateStarting) {
         if (wifi_reconnect_timer_) {
             esp_timer_stop(wifi_reconnect_timer_);
@@ -353,11 +353,8 @@ void Application::HandleNetworkDisconnectedEvent() {
         }
         esp_timer_create_args_t timer_args = {
             .callback = [](void* arg) {
-                Application* app = static_cast<Application*>(arg);
-                ESP_LOGI("Application", "WiFi reconnect timeout - showing QR code");
-                esp_timer_delete(app->wifi_reconnect_timer_);
-                app->wifi_reconnect_timer_ = nullptr;
-                app->SetDeviceState(kDeviceStateWifiConfiguring);
+                ESP_LOGW("Application", "WiFi reconnect timeout - rebooting to enter WiFi config mode");
+                esp_restart();
             },
             .arg = this,
             .dispatch_method = ESP_TIMER_TASK,
