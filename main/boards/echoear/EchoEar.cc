@@ -17,6 +17,7 @@
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <esp_sleep.h>
+#include <cmath>
 
 #include <driver/i2c_master.h>
 #include "i2c_device.h"
@@ -46,6 +47,37 @@ constexpr float kOuterTouchThreshold = 0.015f;
 constexpr uint32_t kOuterTouchDebounceTimes = 2;
 constexpr int kTouchVolumeStep = 10;
 constexpr int64_t kTouchSwipeWindowMs = 250;
+
+// Circular arc volume slider constants
+constexpr int kDisplayCenterX = 180;
+constexpr int kDisplayCenterY = 180;
+constexpr int kEdgeZoneMinRadius = 120;  // Touches beyond this radius = volume zone
+constexpr float kDegreesPerVolumeStep = 36.0f;  // 360 degrees / 10 steps = 36 deg per step (+/-10)
+constexpr float kMinAngleDeltaDeg = 2.0f;  // Minimum angle change to register
+
+float TouchAngleDeg(int x, int y) {
+    float dx = static_cast<float>(x - kDisplayCenterX);
+    float dy = static_cast<float>(y - kDisplayCenterY);
+    float rad = atan2f(dy, dx);
+    float deg = rad * 180.0f / M_PI;
+    if (deg < 0.0f) deg += 360.0f;
+    return deg;
+}
+
+float TouchDistanceFromCenter(int x, int y) {
+    float dx = static_cast<float>(x - kDisplayCenterX);
+    float dy = static_cast<float>(y - kDisplayCenterY);
+    return sqrtf(dx * dx + dy * dy);
+}
+
+// Compute shortest signed angle difference (handles 0/360 wraparound)
+float AngleDelta(float from_deg, float to_deg) {
+    float delta = to_deg - from_deg;
+    if (delta > 180.0f) delta -= 360.0f;
+    else if (delta < -180.0f) delta += 360.0f;
+    return delta;  // Positive = clockwise, negative = counter-clockwise
+}
+
 }  // namespace
 
 
@@ -464,6 +496,10 @@ private:
             return;
         }
 
+        bool is_volume_gesture = false;
+        float last_angle_deg = 0.0f;
+        float accumulated_angle_deg = 0.0f;
+
         while (true) {
             if (touchpad->WaitForTouchEvent()) {
                 auto &app = Application::GetInstance();
@@ -471,19 +507,71 @@ private:
                 ESP_LOGD(TAG, "Touch event, TP_PIN_NUM_INT: %d", gpio_get_level(TP_PIN_NUM_INT));
                 touchpad->UpdateTouchPoint();
                 auto touch_event = touchpad->CheckTouchEvent();
+                const auto& tp = touchpad->GetTouchPoint();
 
-                if (touch_event == Cst816s::TOUCH_RELEASE) {
-                    app.Schedule([]() {
-                        auto& app = Application::GetInstance();
-                        auto state = app.GetDeviceState();
-                        if (state == kDeviceStateStarting) {
+#if CONFIG_USE_EMOTE_MESSAGE_STYLE
+                {
+                    auto* display = Board::GetInstance().GetDisplay();
+                    auto* emote_display = static_cast<emote::EmoteDisplay*>(display);
+                    if (emote_display && emote_display->IsQRCodeActive()) {
+                        continue;
+                    }
+                }
+#endif
+
+                if (touch_event == Cst816s::TOUCH_PRESS) {
+                    float dist = TouchDistanceFromCenter(tp.x, tp.y);
+                    if (dist >= kEdgeZoneMinRadius) {
+                        // Touch started in the edge zone — begin volume gesture
+                        is_volume_gesture = true;
+                        last_angle_deg = TouchAngleDeg(tp.x, tp.y);
+                        accumulated_angle_deg = 0.0f;
+                        ESP_LOGI(TAG, "Volume gesture started at angle %.1f, dist %.0f", last_angle_deg, dist);
+                    } else {
+                        is_volume_gesture = false;
+                    }
+                }
+                else if (touch_event == Cst816s::TOUCH_HOLD && is_volume_gesture) {
+                    float dist = TouchDistanceFromCenter(tp.x, tp.y);
+                    if (dist >= kEdgeZoneMinRadius * 0.7f) {
+                        // Allow some inward drift during swipe
+                        float current_angle = TouchAngleDeg(tp.x, tp.y);
+                        float delta = AngleDelta(last_angle_deg, current_angle);
+                        accumulated_angle_deg += delta;
+                        last_angle_deg = current_angle;
+
+                        // Convert accumulated angle to volume steps (each step = +/-10)
+                        int steps = static_cast<int>(accumulated_angle_deg / kDegreesPerVolumeStep);
+                        if (steps != 0) {
+                            accumulated_angle_deg -= steps * kDegreesPerVolumeStep;
                             auto& board = static_cast<EchoEar&>(Board::GetInstance());
-                            board.EnterWifiConfigMode();
-                            return;
+                            board.ChangeVolume(steps * 10);
+                            ESP_LOGD(TAG, "Volume arc: steps=%d, angle_accum=%.1f", steps, accumulated_angle_deg);
                         }
+                    } else {
+                        // Finger moved too far inward, cancel volume gesture
+                        is_volume_gesture = false;
+                    }
+                }
+                else if (touch_event == Cst816s::TOUCH_RELEASE) {
+                    if (is_volume_gesture) {
+                        // Was a volume gesture — don't trigger chat toggle
+                        is_volume_gesture = false;
+                        ESP_LOGI(TAG, "Volume gesture ended");
+                    } else {
+                        // Center tap — existing behavior
+                        app.Schedule([]() {
+                            auto& app = Application::GetInstance();
+                            auto state = app.GetDeviceState();
+                            if (state == kDeviceStateStarting) {
+                                auto& board = static_cast<EchoEar&>(Board::GetInstance());
+                                board.EnterWifiConfigMode();
+                                return;
+                            }
 
-                        app.ToggleChatState();
-                    });
+                            app.ToggleChatState();
+                        });
+                    }
                 }
             }
         }
@@ -600,16 +688,6 @@ private:
         return gpio_set_level(POWER_CTRL, !on);
     }
 
-#if TOUCH_SLIDER_ENABLED
-    int GetWakeChannelIndex(uint32_t channel) const {
-        for (uint32_t i = 0; i < wake_touch_channel_count_; ++i) {
-            if (wake_touch_channels_[i] == channel) {
-                return static_cast<int>(i);
-            }
-        }
-        return -1;
-    }
-
     void ChangeVolume(int delta) {
         auto* codec = GetAudioCodec();
         if (!codec) return;
@@ -621,6 +699,16 @@ private:
         if (display != nullptr) {
             display->ShowNotification(Lang::Strings::VOLUME + std::to_string(volume), 2000);
         }
+    }
+
+#if TOUCH_SLIDER_ENABLED
+    int GetWakeChannelIndex(uint32_t channel) const {
+        for (uint32_t i = 0; i < wake_touch_channel_count_; ++i) {
+            if (wake_touch_channels_[i] == channel) {
+                return static_cast<int>(i);
+            }
+        }
+        return -1;
     }
 
     bool HandleOuterTouchSlider(uint32_t channel, touch_state_t state) {
