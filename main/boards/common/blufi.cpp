@@ -13,7 +13,7 @@
 #include "freertos/task.h"
 #include "wifi_manager.h"
 
-#define BLUFI_DEVICE_NAME "NOKO-Blufi"
+#define BLUFI_DEVICE_NAME "NOKO-v0"
 
 #ifdef CONFIG_BT_BLUEDROID_ENABLED
 #include "esp_bt_device.h"
