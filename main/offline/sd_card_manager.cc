@@ -5,6 +5,7 @@
 #include <driver/sdmmc_host.h>
 #include <driver/sdspi_host.h>
 #include <driver/spi_common.h>
+#include <esp_heap_caps.h>
 #include <sys/stat.h>
 #include <dirent.h>
 
@@ -210,17 +211,44 @@ esp_err_t SDCardManager::ReadFile(const char* path, std::vector<uint8_t>& buffer
         return ESP_ERR_INVALID_SIZE;
     }
 
-    // Read file
-    buffer.resize(file_size);
-    size_t read = fread(buffer.data(), 1, file_size, file);
-    fclose(file);
+    // Read file using a DMA-capable chunk buffer to avoid SDMMC temp allocations.
+    static constexpr size_t kReadChunkSize = 4096;
+    uint8_t* dma_buffer = static_cast<uint8_t*>(
+        heap_caps_malloc(kReadChunkSize, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
 
-    if (read != file_size) {
-        ESP_LOGE(TAG, "Failed to read file completely. Read %zu of %ld bytes", read, file_size);
-        return ESP_FAIL;
+    buffer.clear();
+    buffer.reserve(static_cast<size_t>(file_size));
+
+    if (dma_buffer) {
+        size_t remaining = static_cast<size_t>(file_size);
+        while (remaining > 0) {
+            size_t to_read = remaining > kReadChunkSize ? kReadChunkSize : remaining;
+            size_t read = fread(dma_buffer, 1, to_read, file);
+            if (read != to_read) {
+                ESP_LOGE(TAG, "Failed to read file completely. Read %zu of %ld bytes", read,
+                         file_size);
+                heap_caps_free(dma_buffer);
+                fclose(file);
+                return ESP_FAIL;
+            }
+            buffer.insert(buffer.end(), dma_buffer, dma_buffer + read);
+            remaining -= read;
+        }
+        heap_caps_free(dma_buffer);
+        fclose(file);
+    } else {
+        ESP_LOGW(TAG, "DMA buffer alloc failed, falling back to direct read");
+        buffer.resize(file_size);
+        size_t read = fread(buffer.data(), 1, file_size, file);
+        fclose(file);
+
+        if (read != static_cast<size_t>(file_size)) {
+            ESP_LOGE(TAG, "Failed to read file completely. Read %zu of %ld bytes", read, file_size);
+            return ESP_FAIL;
+        }
     }
 
-    ESP_LOGD(TAG, "Read %zu bytes from %s", read, path);
+    ESP_LOGD(TAG, "Read %zu bytes from %s", buffer.size(), path);
     return ESP_OK;
 }
 

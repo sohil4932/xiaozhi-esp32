@@ -20,6 +20,7 @@ public:
     virtual void SetTheme(Theme* theme) override;
     virtual void ShowNotification(const char* notification, int duration_ms = 3000) override;
     virtual void UpdateStatusBar(bool update_all = false) override;
+    virtual void ShowQRCode(const char* qrcode_text, const char* caption = nullptr, int duration_ms = 30000) override;
     virtual void SetPowerSaveMode(bool on) override;
     virtual void SetPreviewImage(const void* image);
 
@@ -39,6 +40,9 @@ private:
     virtual void Unlock() override;
 
     emote_handle_t emote_handle_ = nullptr;
+    esp_timer_handle_t notification_timer_ = nullptr;
+    std::string last_status_;
+    std::string last_qrcode_text_;
 
 };
 

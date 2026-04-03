@@ -84,9 +84,9 @@
     "name": "qrcode",
     "align": "GFX_ALIGN_CENTER",
     "x": 0,
-    "y": 30,
+    "y": 0,
     "qrcode": {
-      "size": 150
+      "size": 350
     }
   }
 ]
